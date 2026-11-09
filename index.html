@@ -172,8 +172,8 @@ input[type="text"] { width: 100%; padding: 9px 11px; border: 1px solid var(--axi
 .sbtn { width: 40px; height: 42px; flex: none; border: 1px solid var(--axis); border-radius: 8px; background: transparent; font-size: 20px; line-height: 1; cursor: pointer; }
 .sbtn:hover:not(:disabled) { background: var(--accent-wash); }
 .money { display: flex; align-items: baseline; flex: 1; min-width: 0; height: 42px; border: 1px solid var(--axis); border-radius: 8px; padding: 0 8px; background: var(--surface); }
-.money span { font-family: var(--font-display); font-weight: 800; font-size: 22px; line-height: 40px; color: var(--muted); }
-.money input { width: 100%; min-width: 0; border: 0; background: transparent; font-family: var(--font-display); font-stretch: 108%; font-weight: 800; font-size: 24px; line-height: 40px; height: 40px; padding: 0 0 0 2px; outline: none; }
+.money span { font-family: var(--font-display); font-weight: 800; font-size: 20px; line-height: 40px; color: var(--muted); }
+.money input { width: 100%; min-width: 0; border: 0; background: transparent; font-family: var(--font-display); font-stretch: 100%; font-weight: 800; font-size: 22px; line-height: 40px; height: 40px; padding: 0 0 0 2px; outline: none; }
 .money:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .money:has(input:disabled), .sbtn:disabled { opacity: .55; }
 .sbtn:disabled { cursor: not-allowed; }
@@ -236,11 +236,13 @@ details[open] > summary { margin-bottom: 10px; }
   .firms { gap: 6px; }
   .firm { padding: 9px; }
   .firm .nm { font-size: 13px; gap: 6px; }
-  .firm .pr { font-size: 26px; }
+  .firm .pr { font-size: 21px; font-stretch: 100%; }
   .firm dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .firm dd { text-align: left; margin-bottom: 3px; }
   .hc b { font-size: 15px; }
-  .sbtn { width: 36px; }
+  .stepper { gap: 4px; }
+  .sbtn { width: 34px; }
+  .money { padding: 0 5px; }
 }
 @media (pointer: coarse) {
   .btn.sm { padding: 7px 12px; font-size: 13.5px; }
@@ -267,7 +269,7 @@ details[open] > summary { margin-bottom: 10px; }
   <!-- Start -->
   <section class="step" id="sStart" aria-labelledby="startH">
     <div class="step-h"><span class="stepno">Before you begin</span><h2 id="startH">Set up your company</h2></div>
-    <p class="lede">You and two rivals each run a company selling a software subscription. The three products are similar but not identical, so a cheaper rival takes some of your customers but not all of them. Each of you chooses a price. You will play a one-shot game, then a game of 10 rounds, against the same two rivals.</p>
+    <p class="lede">In this game, you are running a company selling computers. You have two competitors in this market, and your products are similar though not identical meaning customers are price sensitive but not fully elastic. You and your competitors simultaneously choose a price, and earn profits based on how the market assesses the three products and prices offered. You will play a one-shot game, and then a repeated game.</p>
     <div class="field" style="max-width:340px">
       <label for="nameInput">Your name</label>
       <input type="text" id="nameInput" maxlength="24" autocomplete="off" placeholder="Type your name">
@@ -308,23 +310,12 @@ details[open] > summary { margin-bottom: 10px; }
   <section class="step" id="sChoose" aria-labelledby="chooseH" hidden>
     <div class="step-h"><span class="stepno" id="chooseGame"></span><h2 id="chooseH">Set your price</h2></div>
     <div class="lede block" id="chooseRules"></div>
-    <div class="market">
-      <h3>The market</h3>
-      <div class="formula">
-        <p><b>Your sales</b> = 700 − 50 × your price + 20 × (your two rivals’ prices added together)</p>
-        <p><b>Your profit</b> = (your price − $10) × your sales</p>
-      </div>
-      <ul class="facts">
-        <li>Raise your price by $1 and you lose 50 customers. When a rival raises their price by $1, you gain 20.</li>
-        <li>Every customer costs $10 to serve, for hosting, support and payment fees. All three companies have this cost.</li>
-        <li>Prices are whole dollars from $0 to $50. Sales can’t fall below zero.</li>
-      </ul>
-    </div>
+    <div class="market" id="marketBox"></div>
     <div class="block">
-      <h3>Your price, and what-ifs for your rivals</h3>
+      <h3>Simulate the market</h3>
       <div class="prices" id="priceInputs"></div>
       <div class="tablewrap"><table id="calcTable"></table></div>
-      <p class="hint">Your rivals’ prices here are only your guesses, to try out. Nobody sees your price until all three of you have locked in.</p>
+      <p class="hint">Your rivals’ prices here are only your guesses, to try out. Nobody sees your price until all three of you have decided.</p>
     </div>
     <div class="lockrow">
       <button type="button" class="btn primary big" id="lockBtn" disabled>Choose your price first</button>
@@ -362,7 +353,7 @@ details[open] > summary { margin-bottom: 10px; }
       <div class="tablewrap"><table id="finalG1"></table></div>
     </div>
     <div class="block">
-      <h3>Game 2: prices over the 10 rounds</h3>
+      <h3 id="g2Head">Game 2: prices in each round</h3>
       <div class="legend" id="legend"></div>
       <div class="chart" id="chart"></div>
       <div class="tablewrap"><table id="finalG2"></table></div>
@@ -379,9 +370,10 @@ details[open] > summary { margin-bottom: 10px; }
 <script>
 /* CORE START: market rules and three-player sync. No DOM in this block. */
 const Core = (function () {
-  // Each company's sales: base − own × its price + cross × its two rivals' prices added together, never below zero.
-  const MARKET = { base: 700, own: 50, cross: 20, cost: 10, minPrice: 0, maxPrice: 50 };
-  const GAMES = { 1: { rounds: 1 }, 2: { rounds: 10 } };
+  // Each company's sales: base − own per $100 of its price + cross per $100 of its two rivals' prices added together,
+  // never below zero. Prices move in $100 steps, so sales stay whole numbers.
+  const MARKET = { base: 700, own: 50, cross: 20, per: 100, cost: 1000, minPrice: 0, maxPrice: 5000, step: 100 };
+  const GAMES = { 1: { rounds: 1 }, 2: { rounds: 5 } };
   // Every price anyone sets is one decision, numbered from 1: Game 1, then each round of Game 2.
   const DECISIONS = [];
   Object.keys(GAMES).forEach(g => { for (let r = 1; r <= GAMES[g].rounds; r++) DECISIONS.push({ game: +g, round: r }); });
@@ -396,8 +388,8 @@ const Core = (function () {
   const wait = ms => new Promise(r => setTimeout(r, ms));
 
   /* ----- The market ----- */
-  const validPrice = p => Number.isInteger(p) && p >= MARKET.minPrice && p <= MARKET.maxPrice;
-  const sales = (p, r1, r2) => Math.max(0, MARKET.base - MARKET.own * p + MARKET.cross * (r1 + r2));
+  const validPrice = p => Number.isInteger(p) && p % MARKET.step === 0 && p >= MARKET.minPrice && p <= MARKET.maxPrice;
+  const sales = (p, r1, r2) => Math.max(0, MARKET.base - (MARKET.own * p - MARKET.cross * (r1 + r2)) / MARKET.per);
   const profit = (p, r1, r2) => (p - MARKET.cost) * sales(p, r1, r2);
   function outcome(d, seats) {
     const price = {}, firms = {};
@@ -410,16 +402,16 @@ const Core = (function () {
   }
 
   /* ----- Solving the game, for computer players ----- */
-  // The most profitable whole-dollar price against two rivals' prices.
+  // The most profitable allowed price against two rivals' prices.
   function bestResponse(r1, r2) {
     let best = MARKET.minPrice;
-    for (let p = MARKET.minPrice + 1; p <= MARKET.maxPrice; p++) if (profit(p, r1, r2) > profit(best, r1, r2)) best = p;
+    for (let p = MARKET.minPrice + MARKET.step; p <= MARKET.maxPrice; p += MARKET.step) if (profit(p, r1, r2) > profit(best, r1, r2)) best = p;
     return best;
   }
   // The price at which every company is best-responding to the other two. With a known last round,
   // the repeated game's only subgame-perfect equilibrium charges it in every round.
   function equilibriumPrice() {
-    for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p++) if (bestResponse(p, p) === p) return p;
+    for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p += MARKET.step) if (bestResponse(p, p) === p) return p;
     return null;
   }
 
@@ -622,6 +614,17 @@ const Core = (function () {
   const money = x => (x < 0 ? '−$' : '$') + Math.abs(Math.round(x)).toLocaleString('en-US');
   const count = x => x.toLocaleString('en-US');
   const ROUNDS = Core.GAMES[2].rounds;
+  // Where the price boxes start when there is nothing better: the middle of the range.
+  const START = Math.round((MARKET.minPrice + MARKET.maxPrice) / 2 / MARKET.step) * MARKET.step;
+
+  /* ---------- The market, written from the numbers in Core ---------- */
+  const perDollar = x => String(x / MARKET.per); // e.g. 50 per $100 is 0.5 per $1
+  $('marketBox').innerHTML = '<h3>The market</h3><div class="formula">' +
+    `<p><b>Your sales</b> = ${MARKET.base} − ${perDollar(MARKET.own)} × your price + ${perDollar(MARKET.cross)} × (your two rivals’ prices added together)</p>` +
+    `<p><b>Your profit</b> = (your price − ${money(MARKET.cost)}) × your sales</p></div><ul class="facts">` +
+    `<li>Raise your price by ${money(MARKET.per)} and you sell ${MARKET.own} fewer computers. When a rival raises their price by ${money(MARKET.per)}, you sell ${MARKET.cross} more.</li>` +
+    `<li>Each company has a marginal cost of ${money(MARKET.cost)} per computer and no fixed costs.</li>` +
+    `<li>Prices go up in ${money(MARKET.step)} steps, from ${money(MARKET.minPrice)} to ${money(MARKET.maxPrice)}. Sales can’t fall below zero.</li></ul>`;
 
   /* ---------- Browser memory ----------
      The seat is per tab, so two tabs are two players and a reload keeps your seat.
@@ -802,10 +805,10 @@ const Core = (function () {
 
   /* ---------- Choosing a price ---------- */
   function rulesFor(d) {
-    const { game, round } = Core.decision(d);
-    if (game === 1) return '<p>Game 1 is a one-shot game. You and your two rivals each set one price, at the same time. Nobody sees the others’ prices until all three of you have locked in.</p><p>Your score is your profit.</p>';
-    if (round === 1) return `<p>Game 2 is the same market against the same two rivals, played for ${ROUNDS} rounds. Each round, you all set a price at the same time. After each round you will see all three prices, sales and profits.</p><p>Your score is your total profit across the ${ROUNDS} rounds.</p>`;
-    return `<p>Round ${round} of ${ROUNDS}: same market, same rivals. Your score is your total profit across the ${ROUNDS} rounds.</p>`;
+    const { game, round } = Core.decision(d), cost = money(MARKET.cost);
+    if (game === 1) return `<p>Game 1 is a one-shot game. You and your two rivals simultaneously set your prices. You and both rivals face a marginal cost of ${cost} per unit and no fixed costs. Nobody sees the others’ prices until all three of you have decided.</p><p>Your goal is to maximise your own profit.</p>`;
+    if (round === 1) return `<p>Game 2 is a repeated game: the same market against the same two rivals, played for ${ROUNDS} rounds. Each round, you and your rivals simultaneously set your prices, with the same marginal cost of ${cost} per unit and no fixed costs. After each round you will see all three prices, sales and profits.</p><p>Your goal is to maximise your own total profit across the ${ROUNDS} rounds.</p>`;
+    return `<p>Round ${round} of ${ROUNDS}: same market, same rivals. Your goal is to maximise your own total profit across the ${ROUNDS} rounds.</p>`;
   }
   const valueOf = (d, key) => (key === 'me' ? selected[d] : guess[d][key]);
   const setValue = (d, key, v) => { if (key === 'me') selected[d] = v; else guess[d][key] = v; };
@@ -814,16 +817,16 @@ const Core = (function () {
     builtChoose = d;
     $('chooseGame').textContent = gameTag(d);
     $('chooseRules').innerHTML = rulesFor(d);
-    // Start from last round's prices when there is one. In Game 1 your own price starts blank and the guesses at $25.
+    // Start from last round's prices when there is one. In Game 1 your own price starts blank and the guesses mid-range.
     const prev = d > 1 && revealed(d - 1) ? Core.outcome(d - 1, session.seats()) : null;
-    if (!guess[d]) { guess[d] = {}; rivals().forEach(s => { guess[d][s] = prev ? prev.firms[s].price : 25; }); }
+    if (!guess[d]) { guess[d] = {}; rivals().forEach(s => { guess[d][s] = prev ? prev.firms[s].price : START; }); }
     if (selected[d] === undefined && prev && stageNow === 'choose' + d) selected[d] = prev.firms[mySide()].price;
 
     const field = (key, title, sub, aria) => `<div class="pfield${key === 'me' ? ' mine' : ''}">` +
       `<label for="pin-${key}">${title}${sub ? `<span class="sub">${sub}</span>` : ''}</label>` +
-      `<div class="stepper"><button type="button" class="sbtn" data-key="${key}" data-dir="-1" aria-label="Lower ${aria} by $1">−</button>` +
-      `<div class="money"><span aria-hidden="true">$</span><input type="text" id="pin-${key}" data-key="${key}" inputmode="numeric" pattern="[0-9]*" maxlength="2" autocomplete="off" placeholder="–"></div>` +
-      `<button type="button" class="sbtn" data-key="${key}" data-dir="1" aria-label="Raise ${aria} by $1">+</button></div></div>`;
+      `<div class="stepper"><button type="button" class="sbtn" data-key="${key}" data-dir="-1" aria-label="Lower ${aria} by ${money(MARKET.step)}">−</button>` +
+      `<div class="money"><span aria-hidden="true">$</span><input type="text" id="pin-${key}" data-key="${key}" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" placeholder="–"></div>` +
+      `<button type="button" class="sbtn" data-key="${key}" data-dir="1" aria-label="Raise ${aria} by ${money(MARKET.step)}">+</button></div></div>`;
     $('priceInputs').innerHTML = field('me', `${dot(mySide())}Your price`, '', 'your price') +
       rivals().map(s => field(s, `${dot(s)}${esc(name(s))}`, 'your guess', `your guess for ${esc(name(s))}`)).join('');
 
@@ -831,17 +834,24 @@ const Core = (function () {
       const v = valueOf(d, inp.dataset.key);
       inp.value = v === undefined ? '' : v;
       inp.addEventListener('input', () => {
-        const digits = inp.value.replace(/\D/g, '').slice(0, 2);
+        const digits = inp.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '').slice(0, String(MARKET.maxPrice).length);
         const v2 = digits === '' ? undefined : Math.min(MARKET.maxPrice, +digits);
         const shown = v2 === undefined ? '' : String(v2);
-        if (inp.value !== shown) inp.value = shown; // drops stray characters, leading zeros and anything over the cap
+        if (inp.value !== shown) inp.value = shown; // drops commas, stray characters, leading zeros and anything over the cap
+        setValue(d, inp.dataset.key, v2 !== undefined && v2 % MARKET.step === 0 ? v2 : undefined); // e.g. 2 and 20 on the way to 2000
+        renderChoose(d);
+      });
+      inp.addEventListener('change', () => { // leaving the box settles on the nearest allowed price
+        if (inp.value === '') return;
+        const v2 = Math.max(MARKET.minPrice, Math.min(MARKET.maxPrice, Math.round(+inp.value / MARKET.step) * MARKET.step));
+        inp.value = v2;
         setValue(d, inp.dataset.key, v2);
         renderChoose(d);
       });
     });
     $('priceInputs').querySelectorAll('.sbtn').forEach(b => b.addEventListener('click', () => {
       const key = b.dataset.key, cur = valueOf(d, key);
-      const v = Math.max(MARKET.minPrice, Math.min(MARKET.maxPrice, (cur === undefined ? 25 : cur) + +b.dataset.dir));
+      const v = Math.max(MARKET.minPrice, Math.min(MARKET.maxPrice, (cur === undefined ? START : cur) + b.dataset.dir * MARKET.step));
       setValue(d, key, v);
       $('pin-' + key).value = v;
       renderChoose(d);
@@ -868,15 +878,16 @@ const Core = (function () {
       }).join('') + '</tbody>';
 
     const btn = $('lockBtn'), sel = selected[d];
+    const partial = !locked && own.value !== '' && sel === undefined; // typed, but not yet a whole step
     btn.disabled = locked || sel === undefined || busy;
-    btn.textContent = locked ? 'Locked in' : sel === undefined ? 'Choose your price first' : `Lock in your price: ${money(sel)}`;
+    btn.textContent = locked ? 'Decided' : partial ? `Prices go up in ${money(MARKET.step)} steps` : sel === undefined ? 'Choose your price first' : `Decide on ${money(sel)}`;
     const done = rivals().filter(s => seats[s].step >= Core.lockStep(d)).map(name);
     const waiting = rivals().filter(s => seats[s].step < Core.lockStep(d)).map(name);
     $('chooseStatus').textContent = locked
-      ? (waiting.length ? `Waiting for ${list(waiting)} to lock in.` : 'All three prices are in. Opening the market…')
+      ? (waiting.length ? `Waiting for ${list(waiting)} to decide.` : 'All three prices are in. Opening the market…')
       : !done.length ? `${list(waiting)} are still choosing.`
-      : !waiting.length ? `${list(done)} have both locked in.`
-      : `${done[0]} has locked in. ${waiting[0]} is still choosing.`;
+      : !waiting.length ? `${list(done)} have both decided.`
+      : `${done[0]} has decided. ${waiting[0]} is still choosing.`;
 
     const res = game2Results(d - 1);
     $('histBlock').hidden = !res.length;
@@ -909,7 +920,7 @@ const Core = (function () {
         `<span class="pr">${money(f.price)}</span><dl><dt>Sales</dt><dd>${count(f.sales)}</dd><dt>Profit</dt><dd>${money(f.profit)}</dd></dl></div>`;
     }).join('');
     const f = o.firms[me];
-    $('resLine').textContent = `You sold ${count(f.sales)} subscriptions at ${money(f.price)} each, for a profit of ${money(f.profit)}.`;
+    $('resLine').textContent = `You sold ${count(f.sales)} computers at ${money(f.price)} each, for a profit of ${money(f.profit)}.`;
     const res = o.game === 2 ? game2Results(d) : [];
     $('resHistBlock').hidden = !res.length;
     if (res.length) $('resHist').innerHTML = historyTable(res, d);
@@ -938,6 +949,7 @@ const Core = (function () {
     $('finalG2').innerHTML = '<thead><tr><th>Company</th><th class="r">Average price</th><th class="r">Total profit</th></tr></thead><tbody>' +
       ord.map(s => `<tr${s === me ? ' class="mine"' : ''}>${nm(s)}<td class="r num">$${avg(s).toLocaleString('en-US', { maximumFractionDigits: 1 })}</td><td class="r num">${money(tot(s))}</td></tr>`).join('') + '</tbody>';
     $('finalHist').innerHTML = historyTable(res, 0);
+    $('g2Head').textContent = `Game 2: prices over the ${ROUNDS} rounds`;
     $('legend').innerHTML = ord.map(s => `<span><i class="key ${s}"></i><span>${label(s)}</span></span>`).join('');
     chartData = res; chartRound = null;
     drawChart();
@@ -959,8 +971,9 @@ const Core = (function () {
     const short = s => (s.length > 12 ? s.slice(0, 11) + '…' : s);
 
     let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" tabindex="0" aria-label="Each company's price in each round of Game 2. The table below lists every value.">`;
-    for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p += 10) {
-      svg += `<line class="gl" x1="${m.l}" x2="${W - m.r}" y1="${yOf(p)}" y2="${yOf(p)}"/><text x="${m.l - 7}" y="${yOf(p) + 4}" text-anchor="end">$${p}</text>`;
+    const tick = (MARKET.maxPrice - MARKET.minPrice) / 5, compact = p => (p >= 1000 ? `$${p / 1000}K` : `$${p}`);
+    for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p += tick) {
+      svg += `<line class="gl" x1="${m.l}" x2="${W - m.r}" y1="${yOf(p)}" y2="${yOf(p)}"/><text x="${m.l - 7}" y="${yOf(p) + 4}" text-anchor="end">${compact(p)}</text>`;
     }
     for (let r = 1; r <= ROUNDS; r++) svg += `<text x="${xOf(r)}" y="${H - m.b + 17}" text-anchor="middle">${r}</text>`;
     svg += `<text x="${(m.l + W - m.r) / 2}" y="${H - 3}" text-anchor="middle">Round</text>`;
