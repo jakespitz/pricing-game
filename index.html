@@ -194,6 +194,7 @@ th .dot { margin-right: 6px; vertical-align: -1px; }
 .hc small { display: block; font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.35; }
 .hist tr.now td { background: var(--accent-wash); }
 tfoot td { font-weight: 600; border-top: 1px solid var(--axis); border-bottom: 0; }
+tfoot tr + tr td { border-top: 0; padding-top: 0; }
 
 /* Results */
 .firms { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -224,6 +225,7 @@ tfoot td { font-weight: 600; border-top: 1px solid var(--axis); border-bottom: 0
 .chart .hit { fill: transparent; cursor: crosshair; }
 .tip { position: absolute; top: 6px; left: 0; pointer-events: none; background: var(--surface); border: 1px solid var(--axis); border-radius: 8px; padding: 7px 10px; font-size: 13px; display: grid; gap: 3px; min-width: 140px; max-width: 220px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10); }
 .tip > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.flowin { display: grid; gap: 26px; min-width: 0; }
 details > summary { cursor: pointer; font-weight: 500; font-size: 14px; }
 details[open] > summary { margin-bottom: 10px; }
 
@@ -269,12 +271,12 @@ details[open] > summary { margin-bottom: 10px; }
   <!-- Start -->
   <section class="step" id="sStart" aria-labelledby="startH">
     <div class="step-h"><span class="stepno">Before you begin</span><h2 id="startH">Set up your company</h2></div>
-    <p class="lede">In this game, you are running a company selling computers. You have two competitors in this market, and your products are similar though not identical meaning customers are price sensitive but not fully elastic. You and your competitors simultaneously choose a price, and earn profits based on how the market assesses the three products and prices offered. You will play a one-shot game, and then a repeated game.</p>
+    <p class="lede">In this game, you are running a company selling computers. You have two competitors in this market, and your products are similar though not identical meaning customers are price sensitive but not fully elastic. You and your competitors simultaneously choose a price, and earn profits based on how the market assesses the three products and prices offered. You will play a one-shot game, and then two repeated games.</p>
     <div class="field" style="max-width:340px">
       <label for="nameInput">Your name</label>
       <input type="text" id="nameInput" maxlength="24" autocomplete="off" placeholder="Type your name">
     </div>
-    <label class="switch"><input type="checkbox" id="soloToggle"><span class="track" aria-hidden="true"></span><span>Play against the computer<small>For trying the game on your own. Both rivals are computer players that always charge the equilibrium price.</small></span></label>
+    <label class="switch"><input type="checkbox" id="soloToggle"><span class="track" aria-hidden="true"></span><span>Play against the computer<small>For trying the game on your own. Both rivals are computer players that follow an equilibrium strategy.</small></span></label>
     <div class="paths">
       <form class="path" id="createForm">
         <div class="block"><h3>Start a new game</h3><p class="hint" id="createHint">You get a code to give to your two rivals.</p></div>
@@ -333,8 +335,9 @@ details[open] > summary { margin-bottom: 10px; }
     <div class="step-h"><span class="stepno" id="resGame"></span><h2 id="resH">Results</h2></div>
     <div class="firms" id="resFirms"></div>
     <p class="lede" id="resLine"></p>
+    <p class="note" id="resNext" hidden></p>
     <div class="block" id="resHistBlock" hidden>
-      <h3>Game 2 so far</h3>
+      <h3 id="resHistHead"></h3>
       <p class="hint">Each cell shows the price, then sales, then profit.</p>
       <div class="tablewrap"><table class="hist" id="resHist"></table></div>
     </div>
@@ -346,23 +349,13 @@ details[open] > summary { margin-bottom: 10px; }
 
   <!-- Final -->
   <section class="step" id="sFinal" aria-labelledby="finalH" hidden>
-    <div class="step-h"><span class="stepno">Both games played</span><h2 id="finalH">Final results</h2></div>
+    <div class="step-h"><span class="stepno">All games played</span><h2 id="finalH">Final results</h2></div>
     <p class="lede" id="finalLine"></p>
     <div class="block">
       <h3>Game 1: one shot</h3>
       <div class="tablewrap"><table id="finalG1"></table></div>
     </div>
-    <div class="block">
-      <h3 id="g2Head">Game 2: prices in each round</h3>
-      <div class="legend" id="legend"></div>
-      <div class="chart" id="chart"></div>
-      <div class="tablewrap"><table id="finalG2"></table></div>
-      <details>
-        <summary>Every round of Game 2</summary>
-        <p class="hint" style="margin-bottom:8px">Each cell shows the price, then sales, then profit.</p>
-        <div class="tablewrap"><table class="hist" id="finalHist"></table></div>
-      </details>
-    </div>
+    <div class="flowin" id="finalRepeated"></div>
     <div class="lockrow"><button type="button" class="btn primary" id="againBtn">Start another game</button></div>
   </section>
 </main>
@@ -373,8 +366,11 @@ const Core = (function () {
   // Each company's sales: base − own per $100 of its price + cross per $100 of its two rivals' prices added together,
   // never below zero. Prices move in $100 steps, so sales stay whole numbers.
   const MARKET = { base: 700, own: 50, cross: 20, per: 100, cost: 1000, minPrice: 0, maxPrice: 5000, step: 100 };
-  const GAMES = { 1: { rounds: 1 }, 2: { rounds: 5 } };
-  // Every price anyone sets is one decision, numbered from 1: Game 1, then each round of Game 2.
+  // Game 3 ends at random: after each round there is a 75% chance of another, up to a cap of
+  // 10 rounds that players aren't told about.
+  const GAMES = { 1: { rounds: 1 }, 2: { rounds: 5 }, 3: { rounds: 10, continueChance: 0.75 } };
+  // Every price anyone might set is one decision, numbered from 1 through the games in order.
+  // When a random ending stops a game early, play skips the rest of that game's decisions.
   const DECISIONS = [];
   Object.keys(GAMES).forEach(g => { for (let r = 1; r <= GAMES[g].rounds; r++) DECISIONS.push({ game: +g, round: r }); });
   const NDEC = DECISIONS.length;
@@ -391,6 +387,20 @@ const Core = (function () {
   const validPrice = p => Number.isInteger(p) && p % MARKET.step === 0 && p >= MARKET.minPrice && p <= MARKET.maxPrice;
   const sales = (p, r1, r2) => Math.max(0, MARKET.base - (MARKET.own * p - MARKET.cross * (r1 + r2)) / MARKET.per);
   const profit = (p, r1, r2) => (p - MARKET.cost) * sales(p, r1, r2);
+  // The three players' hidden random numbers combine into one draw that none of them can predict.
+  const draw = (d, seats) => SEATS.reduce((x, s) => x ^ seats[s].picks['d' + d].nonce, 0);
+  // Whether a game ends after decision d: at its last (or capped) round, or when a random ending's draw says so.
+  function stopsAfter(d, seats) {
+    const { game, round } = decision(d), q = GAMES[game].continueChance;
+    if (round === GAMES[game].rounds) return true;
+    return q !== undefined && draw(d, seats) >= Math.round(q * 1024); // nonces run 0-1023
+  }
+  // The decision after d, skipping any rounds a random ending cut off; null once every game is over.
+  function nextDecision(d, seats) {
+    if (!stopsAfter(d, seats)) return d + 1;
+    const after = decisionsOf(decision(d).game + 1);
+    return after.length ? after[0] : null;
+  }
   function outcome(d, seats) {
     const price = {}, firms = {};
     SEATS.forEach(s => { price[s] = seats[s].picks['d' + d].price; });
@@ -398,7 +408,7 @@ const Core = (function () {
       const [r1, r2] = others(s).map(x => price[x]);
       firms[s] = { price: price[s], sales: sales(price[s], r1, r2), profit: profit(price[s], r1, r2) };
     });
-    return Object.assign({ d, firms }, decision(d));
+    return Object.assign({ d, firms, ends: stopsAfter(d, seats) }, decision(d));
   }
 
   /* ----- Solving the game, for computer players ----- */
@@ -413,6 +423,31 @@ const Core = (function () {
   function equilibriumPrice() {
     for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p += MARKET.step) if (bestResponse(p, p) === p) return p;
     return null;
+  }
+  // The price that maximises the three companies' joint profit.
+  function collusivePrice() {
+    let best = MARKET.minPrice;
+    for (let p = MARKET.minPrice + MARKET.step; p <= MARKET.maxPrice; p += MARKET.step) if (profit(p, p, p) > profit(best, best, best)) best = p;
+    return best;
+  }
+  // A random ending sustains collusion under grim trigger when the chance of another round is at least
+  // (profit from undercutting − collusive profit) / (profit from undercutting − equilibrium profit).
+  function collusionHolds(game) {
+    const q = GAMES[game].continueChance, n = equilibriumPrice(), m = collusivePrice();
+    if (q === undefined || n === null) return false;
+    const cheat = profit(bestResponse(m, m), m, m);
+    return q >= (cheat - profit(m, m, m)) / (cheat - profit(n, n, n));
+  }
+  // A computer player's price. With a known last round, the equilibrium price every round. Where a random
+  // ending sustains collusion, grim trigger: the collusive price until anyone has charged anything else
+  // in this game, then the equilibrium price for good.
+  function computerPrice(d, seats) {
+    const { game } = decision(d), n = equilibriumPrice();
+    if (n === null) return bestResponse(MARKET.maxPrice / 2, MARKET.maxPrice / 2);
+    if (!collusionHolds(game)) return n;
+    const m = collusivePrice();
+    const kept = decisionsOf(game).filter(x => x < d).every(x => SEATS.every(s => seats[s].picks['d' + x].price === m));
+    return kept ? m : n;
   }
 
   /* ----- Screen for a player, from the three seats alone ----- */
@@ -559,11 +594,15 @@ const Core = (function () {
       tick();
     }
     const ready = () => patch({ step: STEP.READY });
-    const advance = () => patch({ step: me().step + 1 });
+    // From a result: on to the next price, past any rounds a random ending cut off, or to the end.
+    function advance() {
+      const n = nextDecision(me().step / 2, seats);
+      return patch({ step: n ? 2 * n - 1 : STEP.DONE });
+    }
 
     async function lock(d, price) {
-      if (!validPrice(price)) throw new Error('Prices are whole dollars from ' + MARKET.minPrice + ' to ' + MARKET.maxPrice);
-      const pick = { price };
+      if (!validPrice(price)) throw new Error('Prices go up in steps of ' + MARKET.step + ' from ' + MARKET.minPrice + ' to ' + MARKET.maxPrice);
+      const pick = { price, nonce: Math.floor(Math.random() * 1024) };
       picks[d] = pick;
       storage.savePick(info, d, pick);
       const ref = pickRef(d);
@@ -585,7 +624,7 @@ const Core = (function () {
       revealing[d] = true;
       try {
         const pick = await loadPick(d);
-        if (pick) await patch({ picks: { ['d' + d]: { price: pick.price } } });
+        if (pick) await patch({ picks: { ['d' + d]: { price: pick.price, nonce: pick.nonce } } });
         else await patch({ step: lockStep(d) - 1 }); // pick lost: choose again
       } finally { revealing[d] = false; }
     }
@@ -602,7 +641,10 @@ const Core = (function () {
     };
   }
 
-  return { MARKET, GAMES, NDEC, SEATS, STEP, decision, decisionsOf, lockStep, others, validPrice, sales, profit, outcome, bestResponse, equilibriumPrice, stageOf, Session };
+  return {
+    MARKET, GAMES, NDEC, SEATS, STEP, decision, decisionsOf, lockStep, others, validPrice, sales, profit,
+    stopsAfter, nextDecision, outcome, bestResponse, equilibriumPrice, collusivePrice, collusionHolds, computerPrice, stageOf, Session
+  };
 })();
 /* CORE END */
 
@@ -613,7 +655,6 @@ const Core = (function () {
   const use = n => (window.claude && window.claude.use ? window.claude.use(n).catch(() => null) : Promise.resolve(null));
   const money = x => (x < 0 ? '−$' : '$') + Math.abs(Math.round(x)).toLocaleString('en-US');
   const count = x => x.toLocaleString('en-US');
-  const ROUNDS = Core.GAMES[2].rounds;
   // Where the price boxes start when there is nothing better: the middle of the range.
   const START = Math.round((MARKET.minPrice + MARKET.maxPrice) / 2 / MARKET.step) * MARKET.step;
 
@@ -658,12 +699,15 @@ const Core = (function () {
   const label = s => esc(name(s)) + (s === mySide() ? ' <span class="you">(you)</span>' : '');
   const dot = s => `<i class="dot ${s}"></i>`;
   const list = xs => (xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]);
+  const NGAMES = Object.keys(Core.GAMES).length;
   const gameTag = d => {
-    const { game, round } = Core.decision(d);
-    return game === 1 ? 'Game 1 of 2 · One shot' : `Game 2 of 2 · Round ${round} of ${ROUNDS}`;
+    const { game, round } = Core.decision(d), rules = Core.GAMES[game], of = `Game ${game} of ${NGAMES}`;
+    if (rules.rounds === 1) return `${of} · One shot`;
+    return rules.continueChance !== undefined ? `${of} · Round ${round}` : `${of} · Round ${round} of ${rules.rounds}`;
   };
   const revealed = d => SEATS.every(s => { const v = session.seats()[s]; return v && v.picks && v.picks['d' + d]; });
-  const game2Results = upto => Core.decisionsOf(2).filter(d => d <= upto && revealed(d)).map(d => Core.outcome(d, session.seats()));
+  // The rounds of one game played so far, up to decision `upto`
+  const gameResults = (game, upto) => Core.decisionsOf(game).filter(d => d <= upto && revealed(d)).map(d => Core.outcome(d, session.seats()));
 
   async function act(fn) {
     if (busy) return;
@@ -697,12 +741,12 @@ const Core = (function () {
       savePick: (i, d, p) => { mem[d] = p; },
       loadPick: (i, d) => mem[d] || null
     };
-    const price = () => { const p = Core.equilibriumPrice(); return p === null ? Core.bestResponse(25, 25) : p; };
+    const price = d => Core.computerPrice(d, b.s.seats());
     const drive = () => {
       if (b.busy || !b.s.info()) return;
       const st = b.s.stage();
       const fn = st === 'lobby' && b.s.me().step < Core.STEP.READY ? () => b.s.ready()
-        : /^choose\d+$/.test(st) ? () => b.s.lock(+st.slice(6), price())
+        : /^choose\d+$/.test(st) ? () => b.s.lock(+st.slice(6), price(+st.slice(6)))
         : /^result\d+$/.test(st) ? () => b.s.advance()
         : null;
       if (!fn) return;
@@ -805,10 +849,15 @@ const Core = (function () {
 
   /* ---------- Choosing a price ---------- */
   function rulesFor(d) {
-    const { game, round } = Core.decision(d), cost = money(MARKET.cost);
-    if (game === 1) return `<p>Game 1 is a one-shot game. You and your two rivals simultaneously set your prices. You and both rivals face a marginal cost of ${cost} per unit and no fixed costs. Nobody sees the others’ prices until all three of you have decided.</p><p>Your goal is to maximise your own profit.</p>`;
-    if (round === 1) return `<p>Game 2 is a repeated game: the same market against the same two rivals, played for ${ROUNDS} rounds. Each round, you and your rivals simultaneously set your prices, with the same marginal cost of ${cost} per unit and no fixed costs. After each round you will see all three prices, sales and profits.</p><p>Your goal is to maximise your own total profit across the ${ROUNDS} rounds.</p>`;
-    return `<p>Round ${round} of ${ROUNDS}: same market, same rivals. Your goal is to maximise your own total profit across the ${ROUNDS} rounds.</p>`;
+    const { game, round } = Core.decision(d), rules = Core.GAMES[game], cost = money(MARKET.cost);
+    const q = rules.continueChance, pct = x => Math.round(x * 100) + '%';
+    if (q !== undefined) {
+      if (round === 1) return `<p>Game ${game} is a repeated game with a random ending: the same market against the same two rivals. After each round there is a ${pct(q)} chance of another round and a ${pct(1 - q)} chance that the game ends there, so nobody knows in advance which round will be the last. Each round, you and your rivals simultaneously set your prices, with the same marginal cost of ${cost} per unit and no fixed costs. After each round you will see all three prices, sales and profits.</p><p>Your goal is to maximise your own total profit across all the rounds played.</p>`;
+      return `<p>Round ${round}: same market, same rivals. After this round there is a ${pct(q)} chance of another. Your goal is to maximise your own total profit across all the rounds played.</p>`;
+    }
+    if (rules.rounds === 1) return `<p>Game 1 is a one-shot game. You and your two rivals simultaneously set your prices. You and both rivals face a marginal cost of ${cost} per unit and no fixed costs. Nobody sees the others’ prices until all three of you have decided.</p><p>Your goal is to maximise your own profit.</p>`;
+    if (round === 1) return `<p>Game ${game} is a repeated game: the same market against the same two rivals, played for ${rules.rounds} rounds. Each round, you and your rivals simultaneously set your prices, with the same marginal cost of ${cost} per unit and no fixed costs. After each round you will see all three prices, sales and profits.</p><p>Your goal is to maximise your own total profit across the ${rules.rounds} rounds.</p>`;
+    return `<p>Round ${round} of ${rules.rounds}: same market, same rivals. Your goal is to maximise your own total profit across the ${rules.rounds} rounds.</p>`;
   }
   const valueOf = (d, key) => (key === 'me' ? selected[d] : guess[d][key]);
   const setValue = (d, key, v) => { if (key === 'me') selected[d] = v; else guess[d][key] = v; };
@@ -889,7 +938,7 @@ const Core = (function () {
       : !waiting.length ? `${list(done)} have both decided.`
       : `${done[0]} has decided. ${waiting[0]} is still choosing.`;
 
-    const res = game2Results(d - 1);
+    const res = gameResults(Core.decision(d).game, d - 1);
     $('histBlock').hidden = !res.length;
     if (res.length) $('histTable').innerHTML = historyTable(res, 0);
   }
@@ -905,15 +954,16 @@ const Core = (function () {
     return `<thead><tr><th>Round</th>${ord.map(s => `<th class="r">${dot(s)}${label(s)}</th>`).join('')}</tr></thead><tbody>` +
       res.map(o => `<tr${o.d === now ? ' class="now"' : ''}><td class="num">${o.round}</td>` +
         ord.map(s => { const f = o.firms[s]; return `<td class="r hc"><b>${money(f.price)}</b><small>${count(f.sales)} sold</small><small>${money(f.profit)}</small></td>`; }).join('') + '</tr>').join('') +
-      `</tbody><tfoot><tr><td>Total profit</td>${ord.map(s => `<td class="r num">${money(tot(s))}</td>`).join('')}</tr></tfoot>`;
+      `</tbody><tfoot><tr><td>Total profit</td>${ord.map(s => `<td class="r num">${money(tot(s))}</td>`).join('')}</tr>` +
+      `<tr><td>Profit per round</td>${ord.map(s => `<td class="r num">${money(tot(s) / res.length)}</td>`).join('')}</tr></tfoot>`;
   }
 
   /* ---------- Results of one round ---------- */
   function buildResult(d) {
     builtResult = d;
-    const o = Core.outcome(d, session.seats()), me = mySide();
+    const o = Core.outcome(d, session.seats()), me = mySide(), rules = Core.GAMES[o.game];
     $('resGame').textContent = gameTag(d);
-    $('resH').textContent = o.game === 1 ? 'Game 1 results' : `Round ${o.round} results`;
+    $('resH').textContent = rules.rounds === 1 ? `Game ${o.game} results` : `Round ${o.round} results`;
     $('resFirms').innerHTML = order().map(s => {
       const f = o.firms[s];
       return `<div class="firm${s === me ? ' mine' : ''}"><span class="nm">${dot(s)}<span>${label(s)}</span></span>` +
@@ -921,44 +971,58 @@ const Core = (function () {
     }).join('');
     const f = o.firms[me];
     $('resLine').textContent = `You sold ${count(f.sales)} computers at ${money(f.price)} each, for a profit of ${money(f.profit)}.`;
-    const res = o.game === 2 ? game2Results(d) : [];
+    // A random ending says whether another round follows. Reaching the cap reads like any other ending.
+    const random = rules.continueChance !== undefined;
+    $('resNext').hidden = !random;
+    if (random) $('resNext').textContent = o.ends ? `That was the last round of Game ${o.game}.` : `Game ${o.game} continues: there will be another round.`;
+    const res = rules.rounds > 1 ? gameResults(o.game, d) : [];
     $('resHistBlock').hidden = !res.length;
-    if (res.length) $('resHist').innerHTML = historyTable(res, d);
+    if (res.length) { $('resHistHead').textContent = `Game ${o.game} so far`; $('resHist').innerHTML = historyTable(res, d); }
   }
   function renderNext() {
-    const d = builtResult, between = stageNow.startsWith('between'), { game, round } = Core.decision(d);
+    const d = builtResult, between = stageNow.startsWith('between'), { game } = Core.decision(d);
+    const n = Core.nextDecision(d, session.seats()), next = n ? Core.decision(n) : null;
     $('nextBtn').hidden = between;
     $('nextBtn').disabled = busy;
-    $('nextBtn').textContent = d >= Core.NDEC ? 'See the final results' : game === 1 ? 'Continue to Game 2' : `Continue to round ${round + 1}`;
+    $('nextBtn').textContent = !next ? 'See the final results' : next.game !== game ? `Continue to Game ${next.game}` : `Continue to round ${next.round}`;
     const behind = rivals().filter(s => session.seats()[s].step < session.me().step).map(name);
     $('nextStatus').textContent = between ? `Waiting for ${list(behind)} to continue.` : '';
   }
   $('nextBtn').addEventListener('click', () => act(() => session.advance()));
 
   /* ---------- Final ---------- */
-  let chartData = [], chartRound = null;
+  let charts = [];
   function renderFinal() {
     const seats = session.seats(), me = mySide(), ord = order();
-    const g1 = Core.outcome(Core.decisionsOf(1)[0], seats), res = game2Results(Core.NDEC);
-    const tot = s => res.reduce((t, o) => t + o.firms[s].profit, 0);
-    const avg = s => res.reduce((t, o) => t + o.firms[s].price, 0) / res.length;
     const nm = s => `<td><span class="nmcell">${dot(s)}<span>${label(s)}</span></span></td>`;
-    $('finalLine').textContent = `Your profit was ${money(g1.firms[me].profit)} in Game 1 and ${money(tot(me))} across the ${ROUNDS} rounds of Game 2.`;
+    const tot = (res, s) => res.reduce((t, o) => t + o.firms[s].profit, 0);
+    const avgPrice = (res, s) => res.reduce((t, o) => t + o.firms[s].price, 0) / res.length;
+    const g1 = Core.outcome(Core.decisionsOf(1)[0], seats);
     $('finalG1').innerHTML = '<thead><tr><th>Company</th><th class="r">Price</th><th class="r">Sales</th><th class="r">Profit</th></tr></thead><tbody>' +
       ord.map(s => { const f = g1.firms[s]; return `<tr${s === me ? ' class="mine"' : ''}>${nm(s)}<td class="r num">${money(f.price)}</td><td class="r num">${count(f.sales)}</td><td class="r num">${money(f.profit)}</td></tr>`; }).join('') + '</tbody>';
-    $('finalG2').innerHTML = '<thead><tr><th>Company</th><th class="r">Average price</th><th class="r">Total profit</th></tr></thead><tbody>' +
-      ord.map(s => `<tr${s === me ? ' class="mine"' : ''}>${nm(s)}<td class="r num">$${avg(s).toLocaleString('en-US', { maximumFractionDigits: 1 })}</td><td class="r num">${money(tot(s))}</td></tr>`).join('') + '</tbody>';
-    $('finalHist').innerHTML = historyTable(res, 0);
-    $('g2Head').textContent = `Game 2: prices over the ${ROUNDS} rounds`;
-    $('legend').innerHTML = ord.map(s => `<span><i class="key ${s}"></i><span>${label(s)}</span></span>`).join('');
-    chartData = res; chartRound = null;
-    drawChart();
+
+    // The repeated games, compared on profit per round since they can last different lengths
+    const results = Object.keys(Core.GAMES).map(Number).filter(g => Core.GAMES[g].rounds > 1)
+      .map(g => ({ g, res: gameResults(g, Core.NDEC) })).filter(x => x.res.length);
+    $('finalRepeated').innerHTML = results.map(({ g, res }) => '<div class="block">' +
+      `<h3>Game ${g}: prices over the ${res.length} ${res.length === 1 ? 'round' : 'rounds'}${Core.GAMES[g].continueChance !== undefined ? ' played' : ''}</h3>` +
+      `<div class="legend">${ord.map(s => `<span><i class="key ${s}"></i><span>${label(s)}</span></span>`).join('')}</div>` +
+      `<div class="chart" data-game="${g}"></div>` +
+      '<div class="tablewrap"><table><thead><tr><th>Company</th><th class="r">Average price</th><th class="r">Profit per round</th><th class="r">Total profit</th></tr></thead><tbody>' +
+      ord.map(s => `<tr${s === me ? ' class="mine"' : ''}>${nm(s)}<td class="r num">${money(avgPrice(res, s))}</td><td class="r num">${money(tot(res, s) / res.length)}</td><td class="r num">${money(tot(res, s))}</td></tr>`).join('') +
+      `</tbody></table></div><details><summary>Every round of Game ${g}</summary><p class="hint" style="margin-bottom:8px">Each cell shows the price, then sales, then profit.</p>` +
+      `<div class="tablewrap"><table class="hist">${historyTable(res, 0)}</table></div></details></div>`).join('');
+    const parts = [`${money(g1.firms[me].profit)} in Game 1`].concat(results.map(({ g, res }) => `${money(tot(res, me) / res.length)} in Game ${g}`));
+    $('finalLine').textContent = `Your profit per round was ${list(parts)}.`;
+    charts = results.map(({ g, res }) => ({ g, res, box: $('finalRepeated').querySelector(`.chart[data-game="${g}"]`) }));
+    charts.forEach(drawChart);
   }
 
   // Price per round, one line per company. One axis; a crosshair snaps to the nearest round.
-  function drawChart() {
-    const box = $('chart'), res = chartData, ord = order();
-    if (!res.length || $('sFinal').hidden) return;
+  function drawChart({ g, res, box }) {
+    const ord = order();
+    if (!res.length || !box || $('sFinal').hidden) return;
+    const n = res[res.length - 1].round; // rounds played
     const W = Math.max(260, Math.round(box.clientWidth)), H = W < 480 ? 220 : 260;
     const m = { l: 40, r: 14, t: 12, b: 36 };
     const yOf = p => m.t + (MARKET.maxPrice - p) * (H - m.t - m.b) / (MARKET.maxPrice - MARKET.minPrice);
@@ -967,32 +1031,35 @@ const Core = (function () {
     const sorted = ends.slice().sort((x, y) => x - y);
     const labels = W >= 480 && sorted.every((y, i) => i === 0 || y - sorted[i - 1] >= 15);
     if (labels) m.r = 100;
-    const step = (W - m.l - m.r) / (ROUNDS - 1), xOf = r => m.l + (r - 1) * step;
+    const step = n > 1 ? (W - m.l - m.r) / (n - 1) : 0;
+    const xOf = r => (n > 1 ? m.l + (r - 1) * step : (m.l + W - m.r) / 2);
     const short = s => (s.length > 12 ? s.slice(0, 11) + '…' : s);
 
-    let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" tabindex="0" aria-label="Each company's price in each round of Game 2. The table below lists every value.">`;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" tabindex="0" aria-label="Each company's price in each round of Game ${g}. The table below lists every value.">`;
     const tick = (MARKET.maxPrice - MARKET.minPrice) / 5, compact = p => (p >= 1000 ? `$${p / 1000}K` : `$${p}`);
     for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p += tick) {
       svg += `<line class="gl" x1="${m.l}" x2="${W - m.r}" y1="${yOf(p)}" y2="${yOf(p)}"/><text x="${m.l - 7}" y="${yOf(p) + 4}" text-anchor="end">${compact(p)}</text>`;
     }
-    for (let r = 1; r <= ROUNDS; r++) svg += `<text x="${xOf(r)}" y="${H - m.b + 17}" text-anchor="middle">${r}</text>`;
+    for (let r = 1; r <= n; r++) svg += `<text x="${xOf(r)}" y="${H - m.b + 17}" text-anchor="middle">${r}</text>`;
     svg += `<text x="${(m.l + W - m.r) / 2}" y="${H - 3}" text-anchor="middle">Round</text>`;
-    svg += `<line class="xh" id="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/>`;
+    svg += `<line class="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/>`;
     ord.forEach(s => {
       const pts = res.map(o => `${xOf(o.round)},${yOf(o.firms[s].price)}`);
       if (pts.length > 1) svg += `<path class="ln s${s}" d="M${pts.join('L')}"/>`;
       svg += res.map(o => `<circle class="mk f${s}" cx="${xOf(o.round)}" cy="${yOf(o.firms[s].price)}" r="4"/>`).join('');
     });
     if (labels) ord.forEach((s, i) => { svg += `<text class="lab" x="${xOf(last.round) + 10}" y="${ends[i] + 4}">${esc(short(name(s)))}</text>`; });
-    svg += `<rect class="hit" x="${m.l - step / 2}" y="${m.t}" width="${W - m.l - m.r + step}" height="${H - m.t - m.b}"/></svg><div class="tip" id="tip" hidden></div>`;
+    const hitW = n > 1 ? W - m.l - m.r + step : W - m.l - m.r;
+    svg += `<rect class="hit" x="${n > 1 ? m.l - step / 2 : m.l}" y="${m.t}" width="${hitW}" height="${H - m.t - m.b}"/></svg><div class="tip" hidden></div>`;
     box.innerHTML = svg;
 
-    const el = box.querySelector('svg'), tip = $('tip'), xh = $('xh');
-    const hide = () => { chartRound = null; tip.hidden = true; xh.setAttribute('visibility', 'hidden'); };
+    const el = box.querySelector('svg'), tip = box.querySelector('.tip'), xh = box.querySelector('.xh');
+    let current = null;
+    const hide = () => { current = null; tip.hidden = true; xh.setAttribute('visibility', 'hidden'); };
     const show = r => {
       const o = res.find(x => x.round === r);
       if (!o) { hide(); return; }
-      chartRound = r;
+      current = r;
       const x = xOf(r);
       xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
       tip.innerHTML = `<b>Round ${r}</b>` + ord.map(s => `<span><span class="nmcell">${dot(s)}${esc(short(name(s)))}</span><span class="num">${money(o.firms[s].price)}</span></span>`).join('');
@@ -1001,25 +1068,26 @@ const Core = (function () {
       tip.style.left = Math.max(0, px + 14 + tw > box.clientWidth ? px - 14 - tw : px + 14) + 'px';
     };
     const roundAt = ev => {
+      if (n === 1) return 1;
       const rect = el.getBoundingClientRect(), ux = (ev.clientX - rect.left) * W / rect.width;
-      return Math.max(1, Math.min(last.round, Math.round((ux - m.l) / step) + 1));
+      return Math.max(1, Math.min(n, Math.round((ux - m.l) / step) + 1));
     };
     el.addEventListener('pointermove', ev => show(roundAt(ev)));
     el.addEventListener('pointerdown', ev => show(roundAt(ev)));
     el.addEventListener('pointerleave', ev => { if (ev.pointerType === 'mouse') hide(); });
-    el.addEventListener('focus', () => show(chartRound || last.round));
+    el.addEventListener('focus', () => show(current || n));
     el.addEventListener('blur', hide);
     el.addEventListener('keydown', ev => {
       if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
       ev.preventDefault();
-      show(Math.max(1, Math.min(last.round, (chartRound || last.round) + (ev.key === 'ArrowRight' ? 1 : -1))));
+      show(Math.max(1, Math.min(n, (current || n) + (ev.key === 'ArrowRight' ? 1 : -1))));
     });
   }
   let resizeQueued = false;
   window.addEventListener('resize', () => {
     if (resizeQueued) return;
     resizeQueued = true;
-    requestAnimationFrame(() => { resizeQueued = false; if (stageNow === 'final') drawChart(); });
+    requestAnimationFrame(() => { resizeQueued = false; if (stageNow === 'final') charts.forEach(drawChart); });
   });
   $('againBtn').addEventListener('click', () => { session.leave(); });
 
@@ -1053,7 +1121,7 @@ const Core = (function () {
     if (changed) {
       SCREENS.forEach(s => { $(s).hidden = s !== scr; });
       if (prev !== null && prev !== 'start' && st === 'start') {
-        stopBots(); builtChoose = 0; builtResult = 0; chartData = [];
+        stopBots(); builtChoose = 0; builtResult = 0; charts = [];
         [selected, guess].forEach(o => Object.keys(o).forEach(k => delete o[k]));
       }
       if (screenFor(prev || 'start') !== scr) window.scrollTo(0, 0);
