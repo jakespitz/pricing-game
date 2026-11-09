@@ -1,0 +1,1105 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui}img{max-width:100%}[hidden]{display:none!important}</style><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script><script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script><script>// Standalone hosting: gives the game the same small storage interface it has inside Claude,
+// backed by Firestore, so players need only the link. No accounts, so each player's choice
+// stays in their own browser until every player has locked in. Shared by both games.
+(function () {
+  const FIREBASE_CONFIG = {"projectId": "elections-game-3c72c"};
+  let store = null;
+  if (FIREBASE_CONFIG && window.firebase) {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    const fs = firebase.firestore();
+    const wrapDoc = s => ({ id: s.id, exists: s.exists, data: () => s.data(), metadata: s.metadata });
+    const wrapCol = q => ({ docs: q.docs.map(wrapDoc), metadata: q.metadata });
+    const doc = path => {
+      const ref = fs.doc(path);
+      return {
+        get: () => ref.get().then(wrapDoc),
+        set: body => ref.set(body),
+        update: body => ref.set(body, { merge: true }) // Firestore's own update() would replace nested fields
+      };
+    };
+    const collection = path => {
+      const col = fs.collection(path);
+      return {
+        doc: id => doc(path + '/' + id),
+        get: () => col.get().then(wrapCol),
+        onSnapshot: (next, error) => col.onSnapshot(q => next(wrapCol(q)), error)
+      };
+    };
+    // Taking a seat is one atomic step, so two people can never both get it.
+    const claim = (path, body) => fs.runTransaction(async t => {
+      const ref = fs.doc(path), snap = await t.get(ref);
+      if (snap.exists && snap.data().owner) return false;
+      t.set(ref, body);
+      return true;
+    });
+    // Live updates are reliable here, so the backstop refresh can be rare. This keeps a class inside the free tier.
+    store = { doc, collection, claim, pollMs: 30000 };
+  }
+  window.claude = { use: async name => (name === 'db' ? store : null) };
+})();
+</script></head><body><title>The Pricing Game</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one screen at a time in a single column, sibling to The Tax Election. Company colours follow the seat; controls stay neutral so no button reads as a company. */
+:root {
+  --bg: #f1f4f4;
+  --surface: #fdfdfc;
+  --ink: #12161a;
+  --ink-2: #4a5358;
+  --muted: #6c757a;
+  --grid: #e1e5e6;
+  --axis: #c2c9cb;
+  --line: rgba(18, 22, 26, 0.11);
+  --accent: #1f262b;
+  --accent-ink: #3a4449;
+  --accent-wash: rgba(18, 22, 26, 0.06);
+  --on-accent: #ffffff;
+  --ca: #2a78d6;
+  --cb: #eb6834;
+  --cc: #1baf7a;
+  --good: #006300;
+  --bad: #b42f2f;
+  --font-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1213; --surface: #171c1e; --ink: #eef1f2; --ink-2: #c0c8cb; --muted: #8e979b;
+    --grid: #262c2f; --axis: #3b4347; --line: rgba(255, 255, 255, 0.10);
+    --accent: #e6eaec; --accent-ink: #c0c8cb; --accent-wash: rgba(255, 255, 255, 0.07); --on-accent: #12161a;
+    --ca: #3987e5; --cb: #d95926; --cc: #199e70;
+    --good: #2fbf4f; --bad: #ef7b7b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1213; --surface: #171c1e; --ink: #eef1f2; --ink-2: #c0c8cb; --muted: #8e979b;
+  --grid: #262c2f; --axis: #3b4347; --line: rgba(255, 255, 255, 0.10);
+  --accent: #e6eaec; --accent-ink: #c0c8cb; --accent-wash: rgba(255, 255, 255, 0.07); --on-accent: #12161a;
+  --ca: #3987e5; --cb: #d95926; --cc: #199e70;
+  --good: #2fbf4f; --bad: #ef7b7b;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 900px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Header */
+.top { background: var(--surface); border-bottom: 1px solid var(--line); }
+.head { padding-block: 22px 18px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 24px; }
+.brand { display: grid; gap: 4px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-stretch: 118%; font-weight: 800; font-size: clamp(28px, 5vw, 40px); line-height: 1.02; letter-spacing: -0.01em; }
+.gamebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 13px; color: var(--ink-2); }
+.gamebar b { font-family: var(--font-mono); font-weight: 500; color: var(--ink); letter-spacing: 0.06em; }
+
+/* Screens */
+.flow { display: grid; gap: 20px; padding-block: 24px 56px; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px clamp(16px, 3vw, 28px) 24px; display: grid; gap: 18px; min-width: 0; }
+.step-h { display: grid; gap: 2px; }
+.stepno { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-ink); font-weight: 500; }
+.step h2 { font-family: var(--font-display); font-stretch: 114%; font-weight: 800; font-size: clamp(22px, 3.2vw, 28px); line-height: 1.1; }
+.step h3 { font-family: var(--font-display); font-stretch: 110%; font-weight: 700; font-size: 17px; }
+.lede { color: var(--ink-2); font-size: 16px; }
+.hint { font-size: 13px; color: var(--muted); line-height: 1.45; }
+.block { display: grid; gap: 10px; min-width: 0; }
+
+.field { display: grid; gap: 4px; min-width: 0; }
+.field label { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+input[type="text"] { width: 100%; padding: 9px 11px; border: 1px solid var(--axis); border-radius: 7px; background: var(--bg); font-size: 16px; } /* 16px stops phones zooming in on focus */
+#joinCode { font-family: var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; }
+.btn { border: 1px solid var(--axis); background: transparent; border-radius: 8px; padding: 8px 14px; font-size: 14px; font-weight: 500; cursor: pointer; }
+.btn:hover:not(:disabled) { background: var(--accent-wash); }
+.btn.primary { border: 0; background: var(--accent); color: var(--on-accent); font-family: var(--font-display); font-stretch: 110%; font-weight: 700; font-size: 15px; padding: 11px 18px; transition: filter .15s, transform .1s; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.25); background: var(--accent); }
+.btn.primary:active:not(:disabled) { transform: translateY(1px); }
+.btn.big { font-size: 17px; padding: 13px 22px; }
+.btn.sm { padding: 3px 10px; font-size: 12.5px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Start */
+.paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 620px) { .paths { grid-template-columns: minmax(0, 1fr); } }
+.path { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 10px; align-content: space-between; min-width: 0; }
+.msg { font-size: 14px; color: var(--bad); font-weight: 500; }
+.note { font-size: 14px; color: var(--ink-2); padding: 10px 12px; border-radius: 8px; background: var(--bg); }
+.switch { display: inline-flex; align-items: flex-start; gap: 10px; cursor: pointer; font-size: 14.5px; font-weight: 500; max-width: 100%; }
+.switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch .track { position: relative; width: 38px; height: 22px; flex: none; border-radius: 99px; background: var(--axis); transition: background .15s; margin-top: 1px; }
+.switch .track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); transition: transform .15s; }
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(16px); }
+.switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch small { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
+
+/* Lobby */
+.codebox { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.code { font-family: var(--font-mono); font-weight: 500; font-size: clamp(34px, 8vw, 46px); letter-spacing: 0.14em; line-height: 1; user-select: all; }
+.seats { display: grid; gap: 8px; }
+.seat { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.seat .who { display: flex; align-items: center; gap: 9px; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.seat.empty .who { color: var(--muted); font-weight: 400; }
+.dot { width: 11px; height: 11px; border-radius: 50%; flex: none; display: inline-block; }
+.dot.a { background: var(--ca); } .dot.b { background: var(--cb); } .dot.c { background: var(--cc); }
+.pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--axis); color: var(--ink-2); white-space: nowrap; }
+.pill.go { color: var(--good); border-color: currentColor; }
+.you { font-weight: 400; color: var(--muted); font-size: 13px; }
+
+/* The market */
+.market { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 10px; background: var(--bg); min-width: 0; }
+.formula { display: grid; gap: 6px; font-family: var(--font-mono); font-size: 14px; line-height: 1.45; }
+.formula p { padding-left: 1.4em; text-indent: -1.4em; }
+.formula b { font-weight: 500; }
+.facts { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; color: var(--ink-2); }
+
+/* Prices and the calculator */
+.prices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 620px) { .prices { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pfield.mine { grid-column: 1 / -1; } }
+.pfield { display: grid; gap: 6px; align-content: start; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; }
+.pfield.mine { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.pfield label { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; font-size: 13.5px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.pfield .sub { font-weight: 400; color: var(--muted); font-size: 12.5px; }
+.stepper { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sbtn { width: 40px; height: 42px; flex: none; border: 1px solid var(--axis); border-radius: 8px; background: transparent; font-size: 20px; line-height: 1; cursor: pointer; }
+.sbtn:hover:not(:disabled) { background: var(--accent-wash); }
+.money { display: flex; align-items: baseline; flex: 1; min-width: 0; height: 42px; border: 1px solid var(--axis); border-radius: 8px; padding: 0 8px; background: var(--surface); }
+.money span { font-family: var(--font-display); font-weight: 800; font-size: 22px; line-height: 40px; color: var(--muted); }
+.money input { width: 100%; min-width: 0; border: 0; background: transparent; font-family: var(--font-display); font-stretch: 108%; font-weight: 800; font-size: 24px; line-height: 40px; height: 40px; padding: 0 0 0 2px; outline: none; }
+.money:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.money:has(input:disabled), .sbtn:disabled { opacity: .55; }
+.sbtn:disabled { cursor: not-allowed; }
+.nmcell { display: inline-flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+tr.mine td { font-weight: 600; }
+.lockrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.status { font-size: 14px; color: var(--ink-2); }
+
+/* Tables */
+.tablewrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th { text-align: left; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--axis); vertical-align: bottom; }
+td { padding: 7px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+th.r, td.r { text-align: right; }
+th .dot { margin-right: 6px; vertical-align: -1px; }
+.hist td { vertical-align: top; }
+.hc b { display: block; font-family: var(--font-display); font-stretch: 106%; font-weight: 800; font-size: 17px; line-height: 1.2; }
+.hc small { display: block; font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.35; }
+.hist tr.now td { background: var(--accent-wash); }
+tfoot td { font-weight: 600; border-top: 1px solid var(--axis); border-bottom: 0; }
+
+/* Results */
+.firms { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.firm { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); display: grid; gap: 4px; align-content: start; min-width: 0; }
+.firm.mine { box-shadow: inset 0 0 0 2px var(--ink); }
+.firm .nm { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; overflow-wrap: anywhere; min-width: 0; }
+.firm .pr { font-family: var(--font-display); font-stretch: 108%; font-weight: 800; font-size: 34px; line-height: 1.05; }
+.firm dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 13.5px; }
+.firm dt { color: var(--muted); }
+.firm dd { margin: 0; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Chart */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13.5px; }
+.legend > span { display: inline-flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.key { position: relative; width: 20px; height: 2px; border-radius: 1px; flex: none; }
+.key::after { content: ''; position: absolute; left: 6px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: inherit; }
+.key.a { background: var(--ca); } .key.b { background: var(--cb); } .key.c { background: var(--cc); }
+.chart { position: relative; min-width: 0; }
+.chart svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.chart text { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); }
+.chart text.lab { font-family: var(--font-body); font-size: 12px; fill: var(--ink-2); }
+.chart .gl { stroke: var(--grid); stroke-width: 1; }
+.chart .xh { stroke: var(--axis); stroke-width: 1; }
+.chart .ln { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .sa { stroke: var(--ca); } .chart .sb { stroke: var(--cb); } .chart .sc { stroke: var(--cc); }
+.chart .mk { stroke: var(--surface); stroke-width: 2; }
+.chart .fa { fill: var(--ca); } .chart .fb { fill: var(--cb); } .chart .fc { fill: var(--cc); }
+.chart .hit { fill: transparent; cursor: crosshair; }
+.tip { position: absolute; top: 6px; left: 0; pointer-events: none; background: var(--surface); border: 1px solid var(--axis); border-radius: 8px; padding: 7px 10px; font-size: 13px; display: grid; gap: 3px; min-width: 140px; max-width: 220px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10); }
+.tip > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+details > summary { cursor: pointer; font-weight: 500; font-size: 14px; }
+details[open] > summary { margin-bottom: 10px; }
+
+/* Phones: every table fits the screen, so nobody has to scroll sideways mid-game */
+@media (max-width: 560px) {
+  table { font-size: 13px; }
+  th { padding: 6px 5px; }
+  td { padding: 6px 5px; }
+  .btn.big { width: 100%; }
+  .firms { gap: 6px; }
+  .firm { padding: 9px; }
+  .firm .nm { font-size: 13px; gap: 6px; }
+  .firm .pr { font-size: 26px; }
+  .firm dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .firm dd { text-align: left; margin-bottom: 3px; }
+  .hc b { font-size: 15px; }
+  .sbtn { width: 36px; }
+}
+@media (pointer: coarse) {
+  .btn.sm { padding: 7px 12px; font-size: 13.5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::after { transition: none !important; animation: none !important; }
+}
+</style>
+
+<header class="top">
+  <div class="wrap head">
+    <div class="brand">
+      <p class="eyebrow">Game theory · Three-player pricing</p>
+      <h1>The Pricing Game</h1>
+    </div>
+    <div class="gamebar" id="gameBar" hidden>
+      <span>Game code <b id="barCode"></b></span>
+      <button type="button" class="btn sm" id="leaveBtn">Leave game</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap flow">
+  <!-- Start -->
+  <section class="step" id="sStart" aria-labelledby="startH">
+    <div class="step-h"><span class="stepno">Before you begin</span><h2 id="startH">Set up your company</h2></div>
+    <p class="lede">You and two rivals each run a company selling a software subscription. The three products are similar but not identical, so a cheaper rival takes some of your customers but not all of them. Each of you chooses a price. You will play a one-shot game, then a game of 10 rounds, against the same two rivals.</p>
+    <div class="field" style="max-width:340px">
+      <label for="nameInput">Your name</label>
+      <input type="text" id="nameInput" maxlength="24" autocomplete="off" placeholder="Type your name">
+    </div>
+    <label class="switch"><input type="checkbox" id="soloToggle"><span class="track" aria-hidden="true"></span><span>Play against the computer<small>For trying the game on your own. Both rivals are computer players that always charge the equilibrium price.</small></span></label>
+    <div class="paths">
+      <form class="path" id="createForm">
+        <div class="block"><h3>Start a new game</h3><p class="hint" id="createHint">You get a code to give to your two rivals.</p></div>
+        <button type="submit" class="btn primary" id="createBtn" disabled>Start a new game</button>
+      </form>
+      <form class="path" id="joinForm">
+        <div class="block">
+          <h3>Join a game</h3>
+          <div class="field"><label for="joinCode">Game code</label><input type="text" id="joinCode" maxlength="4" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Four characters"></div>
+        </div>
+        <button type="submit" class="btn primary" id="joinBtn" disabled>Join this game</button>
+      </form>
+    </div>
+    <p class="msg" id="startMsg" role="alert" hidden></p>
+    <p class="note" id="startNote">Connecting to the game&hellip;</p>
+  </section>
+
+  <!-- Lobby -->
+  <section class="step" id="sLobby" aria-labelledby="lobbyH" hidden>
+    <div class="step-h"><span class="stepno">Waiting room</span><h2 id="lobbyH">Get all three companies ready</h2></div>
+    <div class="block">
+      <p class="lede" id="lobbyLede">Give your two rivals this code. They open this page and choose Join a game.</p>
+      <div class="codebox"><span class="code" id="lobbyCode"></span><button type="button" class="btn sm" id="copyBtn">Copy code</button></div>
+    </div>
+    <div class="seats" id="lobbySeats"></div>
+    <div class="lockrow">
+      <button type="button" class="btn primary big" id="readyBtn">I'm ready</button>
+      <p class="status" id="lobbyStatus" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- Choose -->
+  <section class="step" id="sChoose" aria-labelledby="chooseH" hidden>
+    <div class="step-h"><span class="stepno" id="chooseGame"></span><h2 id="chooseH">Set your price</h2></div>
+    <div class="lede block" id="chooseRules"></div>
+    <div class="market">
+      <h3>The market</h3>
+      <div class="formula">
+        <p><b>Your sales</b> = 700 − 50 × your price + 20 × (your two rivals’ prices added together)</p>
+        <p><b>Your profit</b> = (your price − $10) × your sales</p>
+      </div>
+      <ul class="facts">
+        <li>Raise your price by $1 and you lose 50 customers. When a rival raises their price by $1, you gain 20.</li>
+        <li>Every customer costs $10 to serve, for hosting, support and payment fees. All three companies have this cost.</li>
+        <li>Prices are whole dollars from $0 to $50. Sales can’t fall below zero.</li>
+      </ul>
+    </div>
+    <div class="block">
+      <h3>Your price, and what-ifs for your rivals</h3>
+      <div class="prices" id="priceInputs"></div>
+      <div class="tablewrap"><table id="calcTable"></table></div>
+      <p class="hint">Your rivals’ prices here are only your guesses, to try out. Nobody sees your price until all three of you have locked in.</p>
+    </div>
+    <div class="lockrow">
+      <button type="button" class="btn primary big" id="lockBtn" disabled>Choose your price first</button>
+      <p class="status" id="chooseStatus" aria-live="polite"></p>
+    </div>
+    <div class="block" id="histBlock" hidden>
+      <h3>Rounds so far</h3>
+      <p class="hint">Each cell shows the price, then sales, then profit.</p>
+      <div class="tablewrap"><table class="hist" id="histTable"></table></div>
+    </div>
+  </section>
+
+  <!-- Result -->
+  <section class="step" id="sResult" aria-labelledby="resH" hidden>
+    <div class="step-h"><span class="stepno" id="resGame"></span><h2 id="resH">Results</h2></div>
+    <div class="firms" id="resFirms"></div>
+    <p class="lede" id="resLine"></p>
+    <div class="block" id="resHistBlock" hidden>
+      <h3>Game 2 so far</h3>
+      <p class="hint">Each cell shows the price, then sales, then profit.</p>
+      <div class="tablewrap"><table class="hist" id="resHist"></table></div>
+    </div>
+    <div class="lockrow">
+      <button type="button" class="btn primary big" id="nextBtn"></button>
+      <p class="status" id="nextStatus" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- Final -->
+  <section class="step" id="sFinal" aria-labelledby="finalH" hidden>
+    <div class="step-h"><span class="stepno">Both games played</span><h2 id="finalH">Final results</h2></div>
+    <p class="lede" id="finalLine"></p>
+    <div class="block">
+      <h3>Game 1: one shot</h3>
+      <div class="tablewrap"><table id="finalG1"></table></div>
+    </div>
+    <div class="block">
+      <h3>Game 2: prices over the 10 rounds</h3>
+      <div class="legend" id="legend"></div>
+      <div class="chart" id="chart"></div>
+      <div class="tablewrap"><table id="finalG2"></table></div>
+      <details>
+        <summary>Every round of Game 2</summary>
+        <p class="hint" style="margin-bottom:8px">Each cell shows the price, then sales, then profit.</p>
+        <div class="tablewrap"><table class="hist" id="finalHist"></table></div>
+      </details>
+    </div>
+    <div class="lockrow"><button type="button" class="btn primary" id="againBtn">Start another game</button></div>
+  </section>
+</main>
+
+<script>
+/* CORE START: market rules and three-player sync. No DOM in this block. */
+const Core = (function () {
+  // Each company's sales: base − own × its price + cross × its two rivals' prices added together, never below zero.
+  const MARKET = { base: 700, own: 50, cross: 20, cost: 10, minPrice: 0, maxPrice: 50 };
+  const GAMES = { 1: { rounds: 1 }, 2: { rounds: 10 } };
+  // Every price anyone sets is one decision, numbered from 1: Game 1, then each round of Game 2.
+  const DECISIONS = [];
+  Object.keys(GAMES).forEach(g => { for (let r = 1; r <= GAMES[g].rounds; r++) DECISIONS.push({ game: +g, round: r }); });
+  const NDEC = DECISIONS.length;
+  const decision = d => DECISIONS[d - 1];
+  const decisionsOf = g => DECISIONS.map((x, i) => (x.game === g ? i + 1 : 0)).filter(Boolean);
+  const SEATS = ['a', 'b', 'c'];
+  // A seat's progress: 1 ready, then for decision d: 2d - 1 choosing, 2d locked in. 2 * NDEC + 1 means finished.
+  const STEP = { JOINED: 0, READY: 1, DONE: 2 * NDEC + 1 };
+  const lockStep = d => 2 * d;
+  const others = s => SEATS.filter(x => x !== s);
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+
+  /* ----- The market ----- */
+  const validPrice = p => Number.isInteger(p) && p >= MARKET.minPrice && p <= MARKET.maxPrice;
+  const sales = (p, r1, r2) => Math.max(0, MARKET.base - MARKET.own * p + MARKET.cross * (r1 + r2));
+  const profit = (p, r1, r2) => (p - MARKET.cost) * sales(p, r1, r2);
+  function outcome(d, seats) {
+    const price = {}, firms = {};
+    SEATS.forEach(s => { price[s] = seats[s].picks['d' + d].price; });
+    SEATS.forEach(s => {
+      const [r1, r2] = others(s).map(x => price[x]);
+      firms[s] = { price: price[s], sales: sales(price[s], r1, r2), profit: profit(price[s], r1, r2) };
+    });
+    return Object.assign({ d, firms }, decision(d));
+  }
+
+  /* ----- Solving the game, for computer players ----- */
+  // The most profitable whole-dollar price against two rivals' prices.
+  function bestResponse(r1, r2) {
+    let best = MARKET.minPrice;
+    for (let p = MARKET.minPrice + 1; p <= MARKET.maxPrice; p++) if (profit(p, r1, r2) > profit(best, r1, r2)) best = p;
+    return best;
+  }
+  // The price at which every company is best-responding to the other two. With a known last round,
+  // the repeated game's only subgame-perfect equilibrium charges it in every round.
+  function equilibriumPrice() {
+    for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p++) if (bestResponse(p, p) === p) return p;
+    return null;
+  }
+
+  /* ----- Screen for a player, from the three seats alone ----- */
+  function stageOf(me, rest) {
+    if (!me) return 'start';
+    if (rest.some(o => !o) || me.step < STEP.READY || rest.some(o => o.step < STEP.READY)) return 'lobby';
+    if (me.step >= STEP.DONE) return 'final';
+    const d = Math.ceil(me.step / 2), behind = rest.some(o => o.step < me.step);
+    if (me.step % 2 === 1) { // choosing decision d, once everyone has moved on from the last result
+      if (d > 1 && behind) return 'between' + (d - 1);
+      return 'choose' + d;
+    }
+    if (behind) return 'locked' + d;
+    const shown = [me].concat(rest).every(v => v.picks && v.picks['d' + d]);
+    return shown ? 'result' + d : 'revealing' + d;
+  }
+
+  /* ----- One player's connection to a game -----
+     Each player writes only to their own seat document, so nobody can overwrite anyone else.
+     A chosen price stays private until all three seats show they have locked in. */
+  function Session({ db, uid, storage, onChange, onLost }) {
+    let info = null, seats = { a: null, b: null, c: null }, unsub = null, lastUpdate = 0;
+    const picks = {}, revealing = {};
+
+    const seatRef = (code, seat) => db.doc('markets/' + code + '/seats/' + seat);
+    const seatsCol = code => db.collection('markets/' + code + '/seats');
+    const pickRef = d => uid ? db.collection('data/users/' + uid).doc('pick-' + info.code + '-' + info.seat + '-' + d) : null;
+    const me = () => (info ? seats[info.seat] : null);
+    const rest = () => (info ? others(info.seat).map(s => seats[s]) : []);
+    const stage = () => stageOf(me(), rest());
+    const newToken = () => 't' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+    async function retry(fn) {
+      try { return await fn(); }
+      catch (e) {
+        if (e && e.code === 'unavailable') { await wait(300 + Math.random() * 500); return fn(); }
+        throw e;
+      }
+    }
+
+    function tick() {
+      const m = /^revealing(\d+)$/.exec(stage());
+      if (m) reveal(+m[1]);
+      onChange();
+    }
+    function apply(snap, fromPoll) {
+      if (!info) return;
+      const next = { a: null, b: null, c: null };
+      snap.docs.forEach(d => {
+        const v = d.data();
+        if (v && v.owner && SEATS.includes(d.id)) next[d.id] = v;
+      });
+      if (fromPoll) SEATS.forEach(s => {
+        if (seats[s] && (!next[s] || next[s].step < seats[s].step)) next[s] = seats[s]; // a read that lagged behind
+      });
+      if (!next[info.seat]) next[info.seat] = seats[info.seat]; // an early or cached read that lacks our seat
+      const mine = next[info.seat];
+      if (!snap.metadata.fromCache && mine && mine.owner !== info.token) { detach(); onLost('moved'); return; }
+      seats = next; lastUpdate = Date.now();
+      tick();
+    }
+    function detach() {
+      if (unsub) unsub();
+      unsub = null; info = null; seats = { a: null, b: null, c: null };
+      storage.clear();
+    }
+    function attach(code, seat, token, name, body) {
+      info = { code, seat, token, name };
+      seats[seat] = body;
+      storage.save(info);
+      // If live updates end for good, poll() keeps the game moving.
+      unsub = seatsCol(code).onSnapshot(s => apply(s, false), () => { unsub = null; });
+    }
+    async function claim(code, seat, token, body) {
+      if (db.claim) return retry(() => db.claim('markets/' + code + '/seats/' + seat, body)); // storage with real transactions
+      const ref = seatRef(code, seat);
+      const lease = await retry(() => ref.acquire({ holder: token, ttlMs: 4000 }));
+      if (!lease.acquired) return false;
+      const snap = await retry(() => ref.get());
+      const cur = snap.exists ? snap.data() : null;
+      if (cur && cur.owner) return false;
+      await retry(() => ref.set(body));
+      return true;
+    }
+    async function readSeat(code, seat) {
+      const s = await retry(() => seatRef(code, seat).get());
+      const v = s.exists ? s.data() : null;
+      return v && v.owner ? v : null;
+    }
+    const seatBody = (token, name) => ({ owner: token, name, step: STEP.JOINED, picks: {}, joinedAt: Date.now() });
+
+    async function create(name) {
+      const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+      for (let i = 0; i < 6; i++) {
+        let code = '';
+        for (let k = 0; k < 4; k++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+        if (await readSeat(code, 'a')) continue;
+        const token = newToken(), body = seatBody(token, name);
+        if (await claim(code, 'a', token, body)) {
+          db.doc('markets/' + code).set({ createdAt: Date.now() }).catch(() => {});
+          attach(code, 'a', token, name, body);
+          return 'ok';
+        }
+      }
+      return 'busy';
+    }
+    async function join(code, name) {
+      if (!await readSeat(code, 'a')) return 'no_game';
+      for (let i = 0; i < 4; i++) {
+        let free = null;
+        for (const s of SEATS.slice(1)) if (!await readSeat(code, s)) { free = s; break; }
+        if (!free) break;
+        const token = newToken(), body = seatBody(token, name);
+        if (await claim(code, free, token, body)) { attach(code, free, token, name, body); return 'ok'; }
+        await wait(300 + Math.random() * 400); // someone else is mid-join: look again
+      }
+      // Game is full. A player coming back on another device retakes the seat with their name.
+      const same = v => v && v.name.trim().toLowerCase() === name.trim().toLowerCase();
+      for (const s of SEATS) {
+        const v = await readSeat(code, s);
+        if (same(v)) {
+          const token = newToken();
+          await retry(() => seatRef(code, s).update({ owner: token }));
+          attach(code, s, token, v.name, Object.assign({}, v, { owner: token }));
+          return 'ok';
+        }
+      }
+      return 'full';
+    }
+    async function resume(saved) {
+      const v = await readSeat(saved.code, saved.seat);
+      if (!v || v.owner !== saved.token) { storage.clear(); return false; }
+      attach(saved.code, saved.seat, saved.token, saved.name, v);
+      return true;
+    }
+    function leave() { detach(); onChange(); }
+
+    async function patch(body) {
+      const code = info.code, seat = info.seat;
+      await retry(() => seatRef(code, seat).update(body));
+      if (!info || info.code !== code) return;
+      const cur = seats[seat] || {};
+      seats[seat] = Object.assign({}, cur, body, { picks: Object.assign({}, cur.picks, body.picks) });
+      tick();
+    }
+    const ready = () => patch({ step: STEP.READY });
+    const advance = () => patch({ step: me().step + 1 });
+
+    async function lock(d, price) {
+      if (!validPrice(price)) throw new Error('Prices are whole dollars from ' + MARKET.minPrice + ' to ' + MARKET.maxPrice);
+      const pick = { price };
+      picks[d] = pick;
+      storage.savePick(info, d, pick);
+      const ref = pickRef(d);
+      if (ref) await retry(() => ref.set(pick)).catch(() => {});
+      await patch({ step: lockStep(d) });
+    }
+    async function loadPick(d) {
+      if (picks[d]) return picks[d];
+      const local = storage.loadPick(info, d);
+      if (local) return (picks[d] = local);
+      const ref = pickRef(d);
+      if (!ref) return null;
+      const s = await retry(() => ref.get());
+      return s.exists ? (picks[d] = s.data()) : null;
+    }
+    async function reveal(d) {
+      const m = me();
+      if (revealing[d] || (m.picks && m.picks['d' + d])) return;
+      revealing[d] = true;
+      try {
+        const pick = await loadPick(d);
+        if (pick) await patch({ picks: { ['d' + d]: { price: pick.price } } });
+        else await patch({ step: lockStep(d) - 1 }); // pick lost: choose again
+      } finally { revealing[d] = false; }
+    }
+    // A backstop for networks where live updates fall back to slow refreshes.
+    async function poll() {
+      if (!info || stage() === 'final' || Date.now() - lastUpdate < (db.pollMs || 4000)) return;
+      lastUpdate = Date.now();
+      try { apply(await seatsCol(info.code).get(), true); } catch (e) { /* the next poll tries again */ }
+    }
+
+    return {
+      create, join, resume, leave, ready, advance, lock, poll, loadPick, stage,
+      me, rest, seats: () => seats, info: () => info
+    };
+  }
+
+  return { MARKET, GAMES, NDEC, SEATS, STEP, decision, decisionsOf, lockStep, others, validPrice, sales, profit, outcome, bestResponse, equilibriumPrice, stageOf, Session };
+})();
+/* CORE END */
+
+(function () {
+  const { MARKET, SEATS } = Core;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const use = n => (window.claude && window.claude.use ? window.claude.use(n).catch(() => null) : Promise.resolve(null));
+  const money = x => (x < 0 ? '−$' : '$') + Math.abs(Math.round(x)).toLocaleString('en-US');
+  const count = x => x.toLocaleString('en-US');
+  const ROUNDS = Core.GAMES[2].rounds;
+
+  /* ---------- Browser memory ----------
+     The seat is per tab, so two tabs are two players and a reload keeps your seat.
+     Locked prices go in longer-lived storage, so closing and reopening the tab before the
+     round resolves doesn't lose one. Only a switch to another device does: that player
+     then chooses again, after the others' prices may already be showing. */
+  const KEY = 'pricing-game-seat-v1';
+  const pickKey = (i, d) => `pricing-game-pick-${i.code}-${i.seat}-${d}`;
+  const keep = area => ({
+    get(k) { try { return JSON.parse(area().getItem(k)); } catch (e) { return null; } },
+    set(k, v) { try { area().setItem(k, JSON.stringify(v)); } catch (e) {} },
+    del(k) { try { area().removeItem(k); } catch (e) {} }
+  });
+  const ss = keep(() => sessionStorage), ls = keep(() => localStorage);
+  const storage = {
+    save: info => ss.set(KEY, info),
+    clear: () => ss.del(KEY),
+    savePick: (i, d, p) => ls.set(pickKey(i, d), p),
+    loadPick: (i, d) => ls.get(pickKey(i, d))
+  };
+
+  let session = null, ready = false, stageNow = null, busy = false;
+  const selected = {}, guess = {};
+  let builtChoose = 0, builtResult = 0;
+
+  /* ---------- Small helpers ---------- */
+  const name = s => { const v = session.seats()[s]; return v ? v.name : 'A rival'; };
+  const mySide = () => session.info().seat;
+  const rivals = () => Core.others(mySide());
+  const order = () => [mySide()].concat(rivals()); // you first, then your rivals
+  const label = s => esc(name(s)) + (s === mySide() ? ' <span class="you">(you)</span>' : '');
+  const dot = s => `<i class="dot ${s}"></i>`;
+  const list = xs => (xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]);
+  const gameTag = d => {
+    const { game, round } = Core.decision(d);
+    return game === 1 ? 'Game 1 of 2 · One shot' : `Game 2 of 2 · Round ${round} of ${ROUNDS}`;
+  };
+  const revealed = d => SEATS.every(s => { const v = session.seats()[s]; return v && v.picks && v.picks['d' + d]; });
+  const game2Results = upto => Core.decisionsOf(2).filter(d => d <= upto && revealed(d)).map(d => Core.outcome(d, session.seats()));
+
+  async function act(fn) {
+    if (busy) return;
+    busy = true; render();
+    let err = null;
+    try { await fn(); }
+    catch (e) { err = e; }
+    finally { busy = false; render(); if (err) showProblem(err); } // after the redraw, so the message stays up
+  }
+  function showProblem(e) {
+    const refused = e && (e.code === 'permission-denied' || e.code === 'invalid_argument' || e.code === 'not_granted');
+    const text = refused
+      ? 'The game server refused that move. Ask your instructor to check the game is set up.'
+      : 'That did not go through. Check your connection and try again.';
+    const st = stageNow;
+    if (st === 'start' || !st) { $('startMsg').textContent = text; $('startMsg').hidden = false; }
+    else if (st === 'lobby') $('lobbyStatus').textContent = text;
+    else if (/^(choose|locked|revealing)/.test(st)) $('chooseStatus').textContent = text;
+    else $('nextStatus').textContent = text;
+  }
+
+  /* ---------- Computer players, for trying the game alone ----------
+     Each one takes a real seat through the same database, so a practice game tests the live setup too. */
+  const BOTS_KEY = KEY + '-bots';
+  let gameDb = null, bots = [], solo = false;
+  function makeBot() {
+    const mem = {}, b = { s: null, busy: false };
+    const storage = {
+      save: info => ss.set(BOTS_KEY, (ss.get(BOTS_KEY) || []).filter(x => x.seat !== info.seat).concat([info])),
+      clear: () => {},
+      savePick: (i, d, p) => { mem[d] = p; },
+      loadPick: (i, d) => mem[d] || null
+    };
+    const price = () => { const p = Core.equilibriumPrice(); return p === null ? Core.bestResponse(25, 25) : p; };
+    const drive = () => {
+      if (b.busy || !b.s.info()) return;
+      const st = b.s.stage();
+      const fn = st === 'lobby' && b.s.me().step < Core.STEP.READY ? () => b.s.ready()
+        : /^choose\d+$/.test(st) ? () => b.s.lock(+st.slice(6), price())
+        : /^result\d+$/.test(st) ? () => b.s.advance()
+        : null;
+      if (!fn) return;
+      b.busy = true;
+      setTimeout(() => { Promise.resolve().then(fn).catch(() => {}).finally(() => { b.busy = false; drive(); }); }, 600 + Math.random() * 800);
+    };
+    b.s = Core.Session({ db: gameDb, uid: null, storage, onChange: drive, onLost: () => {} });
+    return b;
+  }
+  async function addBots(names) {
+    solo = true;
+    for (const n of names) {
+      const b = makeBot();
+      if (await b.s.join(session.info().code, n) === 'ok') bots.push(b);
+    }
+  }
+  async function resumeBots() {
+    for (const info of ss.get(BOTS_KEY) || []) {
+      if (!session.info() || info.code !== session.info().code) continue;
+      const b = makeBot();
+      if (await b.s.resume(info).catch(() => false)) bots.push(b);
+    }
+    solo = bots.length > 0;
+    if (!solo) ss.del(BOTS_KEY);
+  }
+  function stopBots() {
+    bots.forEach(b => b.s.leave());
+    bots = []; solo = false;
+    ss.del(BOTS_KEY);
+  }
+
+  /* ---------- Start screen ---------- */
+  $('soloToggle').addEventListener('change', () => {
+    const on = $('soloToggle').checked;
+    $('joinForm').hidden = on;
+    $('createBtn').textContent = on ? 'Start a game against the computer' : 'Start a new game';
+    $('createHint').textContent = on ? 'Two computer players join as your rivals.' : 'You get a code to give to your two rivals.';
+  });
+  function refreshStartButtons() {
+    const named = $('nameInput').value.trim().length > 0;
+    $('createBtn').disabled = !ready || !named || busy;
+    $('joinBtn').disabled = !ready || !named || busy || $('joinCode').value.trim().length !== 4;
+  }
+  $('nameInput').addEventListener('input', refreshStartButtons);
+  $('joinCode').addEventListener('input', () => {
+    $('joinCode').value = $('joinCode').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    refreshStartButtons();
+  });
+  $('createForm').addEventListener('submit', e => {
+    e.preventDefault();
+    $('startMsg').hidden = true;
+    act(async () => {
+      const r = await session.create($('nameInput').value.trim());
+      if (r !== 'ok') { $('startMsg').textContent = 'We could not start a game just now. Please try again.'; $('startMsg').hidden = false; return; }
+      if ($('soloToggle').checked) await addBots(['Computer 1', 'Computer 2']);
+    });
+  });
+  $('joinForm').addEventListener('submit', e => {
+    e.preventDefault();
+    $('startMsg').hidden = true;
+    act(async () => {
+      const r = await session.join($('joinCode').value.trim(), $('nameInput').value.trim());
+      const text = {
+        no_game: 'No game has that code. Check it with your rivals.',
+        full: 'That game already has three players. If you are one of them, type the name you used.'
+      }[r];
+      if (text) { $('startMsg').textContent = text; $('startMsg').hidden = false; }
+    });
+  });
+
+  /* ---------- Lobby ---------- */
+  function renderLobby() {
+    const seats = session.seats();
+    $('lobbyCode').textContent = session.info().code;
+    $('lobbyLede').textContent = solo ? 'Two computer players are joining as your rivals.' : 'Give your two rivals this code. They open this page and choose Join a game.';
+    $('lobbySeats').innerHTML = SEATS.map(s => {
+      const v = seats[s];
+      if (!v) return `<div class="seat empty"><span class="who">${dot(s)}Waiting for a player to join</span></div>`;
+      const go = v.step >= Core.STEP.READY;
+      return `<div class="seat"><span class="who">${dot(s)}<span>${label(s)}</span></span><span class="pill${go ? ' go' : ''}">${go ? 'Ready' : 'Not ready'}</span></div>`;
+    }).join('');
+    const iAmReady = session.me().step >= Core.STEP.READY;
+    const missing = SEATS.filter(s => !seats[s]).length;
+    const notReady = rivals().filter(s => seats[s] && seats[s].step < Core.STEP.READY).map(name);
+    $('readyBtn').disabled = iAmReady || busy;
+    $('readyBtn').textContent = iAmReady ? 'You are ready' : "I'm ready";
+    $('lobbyStatus').textContent = !iAmReady
+      ? (missing ? 'The game starts when all three companies have joined and are ready.' : 'Click when you are ready to start.')
+      : missing ? `Waiting for ${missing === 1 ? 'one more company' : 'two more companies'} to join.`
+      : `Waiting for ${list(notReady)} to get ready.`;
+  }
+  $('readyBtn').addEventListener('click', () => act(() => session.ready()));
+  $('copyBtn').addEventListener('click', () => {
+    const code = session.info().code, b = $('copyBtn');
+    const done = t => { b.textContent = t; setTimeout(() => { b.textContent = 'Copy code'; }, 1800); };
+    try {
+      navigator.clipboard.writeText(code).then(() => done('Copied'), () => done('Select the code to copy it'));
+    } catch (e) { done('Select the code to copy it'); }
+  });
+
+  /* ---------- Choosing a price ---------- */
+  function rulesFor(d) {
+    const { game, round } = Core.decision(d);
+    if (game === 1) return '<p>Game 1 is a one-shot game. You and your two rivals each set one price, at the same time. Nobody sees the others’ prices until all three of you have locked in.</p><p>Your score is your profit.</p>';
+    if (round === 1) return `<p>Game 2 is the same market against the same two rivals, played for ${ROUNDS} rounds. Each round, you all set a price at the same time. After each round you will see all three prices, sales and profits.</p><p>Your score is your total profit across the ${ROUNDS} rounds.</p>`;
+    return `<p>Round ${round} of ${ROUNDS}: same market, same rivals. Your score is your total profit across the ${ROUNDS} rounds.</p>`;
+  }
+  const valueOf = (d, key) => (key === 'me' ? selected[d] : guess[d][key]);
+  const setValue = (d, key, v) => { if (key === 'me') selected[d] = v; else guess[d][key] = v; };
+
+  function buildChoose(d) {
+    builtChoose = d;
+    $('chooseGame').textContent = gameTag(d);
+    $('chooseRules').innerHTML = rulesFor(d);
+    // Start from last round's prices when there is one. In Game 1 your own price starts blank and the guesses at $25.
+    const prev = d > 1 && revealed(d - 1) ? Core.outcome(d - 1, session.seats()) : null;
+    if (!guess[d]) { guess[d] = {}; rivals().forEach(s => { guess[d][s] = prev ? prev.firms[s].price : 25; }); }
+    if (selected[d] === undefined && prev && stageNow === 'choose' + d) selected[d] = prev.firms[mySide()].price;
+
+    const field = (key, title, sub, aria) => `<div class="pfield${key === 'me' ? ' mine' : ''}">` +
+      `<label for="pin-${key}">${title}${sub ? `<span class="sub">${sub}</span>` : ''}</label>` +
+      `<div class="stepper"><button type="button" class="sbtn" data-key="${key}" data-dir="-1" aria-label="Lower ${aria} by $1">−</button>` +
+      `<div class="money"><span aria-hidden="true">$</span><input type="text" id="pin-${key}" data-key="${key}" inputmode="numeric" pattern="[0-9]*" maxlength="2" autocomplete="off" placeholder="–"></div>` +
+      `<button type="button" class="sbtn" data-key="${key}" data-dir="1" aria-label="Raise ${aria} by $1">+</button></div></div>`;
+    $('priceInputs').innerHTML = field('me', `${dot(mySide())}Your price`, '', 'your price') +
+      rivals().map(s => field(s, `${dot(s)}${esc(name(s))}`, 'your guess', `your guess for ${esc(name(s))}`)).join('');
+
+    $('priceInputs').querySelectorAll('input').forEach(inp => {
+      const v = valueOf(d, inp.dataset.key);
+      inp.value = v === undefined ? '' : v;
+      inp.addEventListener('input', () => {
+        const digits = inp.value.replace(/\D/g, '').slice(0, 2);
+        const v2 = digits === '' ? undefined : Math.min(MARKET.maxPrice, +digits);
+        const shown = v2 === undefined ? '' : String(v2);
+        if (inp.value !== shown) inp.value = shown; // drops stray characters, leading zeros and anything over the cap
+        setValue(d, inp.dataset.key, v2);
+        renderChoose(d);
+      });
+    });
+    $('priceInputs').querySelectorAll('.sbtn').forEach(b => b.addEventListener('click', () => {
+      const key = b.dataset.key, cur = valueOf(d, key);
+      const v = Math.max(MARKET.minPrice, Math.min(MARKET.maxPrice, (cur === undefined ? 25 : cur) + +b.dataset.dir));
+      setValue(d, key, v);
+      $('pin-' + key).value = v;
+      renderChoose(d);
+    }));
+  }
+  function renderChoose(d) {
+    const locked = stageNow !== 'choose' + d, me = mySide(), seats = session.seats();
+    const own = $('pin-me');
+    own.disabled = locked;
+    $('priceInputs').querySelectorAll('.sbtn[data-key="me"]').forEach(b => { b.disabled = locked; });
+    if (locked && selected[d] !== undefined && own.value !== String(selected[d])) own.value = selected[d];
+
+    // The calculator: everyone's sales and profit if prices are as entered
+    const p = { [me]: selected[d] };
+    rivals().forEach(s => { p[s] = guess[d][s]; });
+    const full = order().every(s => p[s] !== undefined);
+    $('calcTable').innerHTML = '<thead><tr><th>If prices are</th><th class="r">Price</th><th class="r">Sales</th><th class="r">Profit</th></tr></thead><tbody>' +
+      order().map(s => {
+        const [r1, r2] = Core.others(s).map(x => p[x]);
+        return `<tr${s === me ? ' class="mine"' : ''}><td><span class="nmcell">${dot(s)}<span>${label(s)}</span></span></td>` +
+          `<td class="r num">${p[s] === undefined ? '–' : money(p[s])}</td>` +
+          `<td class="r num">${full ? count(Core.sales(p[s], r1, r2)) : '–'}</td>` +
+          `<td class="r num">${full ? money(Core.profit(p[s], r1, r2)) : '–'}</td></tr>`;
+      }).join('') + '</tbody>';
+
+    const btn = $('lockBtn'), sel = selected[d];
+    btn.disabled = locked || sel === undefined || busy;
+    btn.textContent = locked ? 'Locked in' : sel === undefined ? 'Choose your price first' : `Lock in your price: ${money(sel)}`;
+    const done = rivals().filter(s => seats[s].step >= Core.lockStep(d)).map(name);
+    const waiting = rivals().filter(s => seats[s].step < Core.lockStep(d)).map(name);
+    $('chooseStatus').textContent = locked
+      ? (waiting.length ? `Waiting for ${list(waiting)} to lock in.` : 'All three prices are in. Opening the market…')
+      : !done.length ? `${list(waiting)} are still choosing.`
+      : !waiting.length ? `${list(done)} have both locked in.`
+      : `${done[0]} has locked in. ${waiting[0]} is still choosing.`;
+
+    const res = game2Results(d - 1);
+    $('histBlock').hidden = !res.length;
+    if (res.length) $('histTable').innerHTML = historyTable(res, 0);
+  }
+  $('lockBtn').addEventListener('click', () => {
+    const d = builtChoose, price = selected[d];
+    if (price === undefined) return;
+    act(() => session.lock(d, price));
+  });
+
+  function historyTable(res, now) {
+    const ord = order();
+    const tot = s => res.reduce((t, o) => t + o.firms[s].profit, 0);
+    return `<thead><tr><th>Round</th>${ord.map(s => `<th class="r">${dot(s)}${label(s)}</th>`).join('')}</tr></thead><tbody>` +
+      res.map(o => `<tr${o.d === now ? ' class="now"' : ''}><td class="num">${o.round}</td>` +
+        ord.map(s => { const f = o.firms[s]; return `<td class="r hc"><b>${money(f.price)}</b><small>${count(f.sales)} sold</small><small>${money(f.profit)}</small></td>`; }).join('') + '</tr>').join('') +
+      `</tbody><tfoot><tr><td>Total profit</td>${ord.map(s => `<td class="r num">${money(tot(s))}</td>`).join('')}</tr></tfoot>`;
+  }
+
+  /* ---------- Results of one round ---------- */
+  function buildResult(d) {
+    builtResult = d;
+    const o = Core.outcome(d, session.seats()), me = mySide();
+    $('resGame').textContent = gameTag(d);
+    $('resH').textContent = o.game === 1 ? 'Game 1 results' : `Round ${o.round} results`;
+    $('resFirms').innerHTML = order().map(s => {
+      const f = o.firms[s];
+      return `<div class="firm${s === me ? ' mine' : ''}"><span class="nm">${dot(s)}<span>${label(s)}</span></span>` +
+        `<span class="pr">${money(f.price)}</span><dl><dt>Sales</dt><dd>${count(f.sales)}</dd><dt>Profit</dt><dd>${money(f.profit)}</dd></dl></div>`;
+    }).join('');
+    const f = o.firms[me];
+    $('resLine').textContent = `You sold ${count(f.sales)} subscriptions at ${money(f.price)} each, for a profit of ${money(f.profit)}.`;
+    const res = o.game === 2 ? game2Results(d) : [];
+    $('resHistBlock').hidden = !res.length;
+    if (res.length) $('resHist').innerHTML = historyTable(res, d);
+  }
+  function renderNext() {
+    const d = builtResult, between = stageNow.startsWith('between'), { game, round } = Core.decision(d);
+    $('nextBtn').hidden = between;
+    $('nextBtn').disabled = busy;
+    $('nextBtn').textContent = d >= Core.NDEC ? 'See the final results' : game === 1 ? 'Continue to Game 2' : `Continue to round ${round + 1}`;
+    const behind = rivals().filter(s => session.seats()[s].step < session.me().step).map(name);
+    $('nextStatus').textContent = between ? `Waiting for ${list(behind)} to continue.` : '';
+  }
+  $('nextBtn').addEventListener('click', () => act(() => session.advance()));
+
+  /* ---------- Final ---------- */
+  let chartData = [], chartRound = null;
+  function renderFinal() {
+    const seats = session.seats(), me = mySide(), ord = order();
+    const g1 = Core.outcome(Core.decisionsOf(1)[0], seats), res = game2Results(Core.NDEC);
+    const tot = s => res.reduce((t, o) => t + o.firms[s].profit, 0);
+    const avg = s => res.reduce((t, o) => t + o.firms[s].price, 0) / res.length;
+    const nm = s => `<td><span class="nmcell">${dot(s)}<span>${label(s)}</span></span></td>`;
+    $('finalLine').textContent = `Your profit was ${money(g1.firms[me].profit)} in Game 1 and ${money(tot(me))} across the ${ROUNDS} rounds of Game 2.`;
+    $('finalG1').innerHTML = '<thead><tr><th>Company</th><th class="r">Price</th><th class="r">Sales</th><th class="r">Profit</th></tr></thead><tbody>' +
+      ord.map(s => { const f = g1.firms[s]; return `<tr${s === me ? ' class="mine"' : ''}>${nm(s)}<td class="r num">${money(f.price)}</td><td class="r num">${count(f.sales)}</td><td class="r num">${money(f.profit)}</td></tr>`; }).join('') + '</tbody>';
+    $('finalG2').innerHTML = '<thead><tr><th>Company</th><th class="r">Average price</th><th class="r">Total profit</th></tr></thead><tbody>' +
+      ord.map(s => `<tr${s === me ? ' class="mine"' : ''}>${nm(s)}<td class="r num">$${avg(s).toLocaleString('en-US', { maximumFractionDigits: 1 })}</td><td class="r num">${money(tot(s))}</td></tr>`).join('') + '</tbody>';
+    $('finalHist').innerHTML = historyTable(res, 0);
+    $('legend').innerHTML = ord.map(s => `<span><i class="key ${s}"></i><span>${label(s)}</span></span>`).join('');
+    chartData = res; chartRound = null;
+    drawChart();
+  }
+
+  // Price per round, one line per company. One axis; a crosshair snaps to the nearest round.
+  function drawChart() {
+    const box = $('chart'), res = chartData, ord = order();
+    if (!res.length || $('sFinal').hidden) return;
+    const W = Math.max(260, Math.round(box.clientWidth)), H = W < 480 ? 220 : 260;
+    const m = { l: 40, r: 14, t: 12, b: 36 };
+    const yOf = p => m.t + (MARKET.maxPrice - p) * (H - m.t - m.b) / (MARKET.maxPrice - MARKET.minPrice);
+    const last = res[res.length - 1], ends = ord.map(s => yOf(last.firms[s].price));
+    // Names ride the line ends only when there is room and the ends sit apart; the legend always carries them.
+    const sorted = ends.slice().sort((x, y) => x - y);
+    const labels = W >= 480 && sorted.every((y, i) => i === 0 || y - sorted[i - 1] >= 15);
+    if (labels) m.r = 100;
+    const step = (W - m.l - m.r) / (ROUNDS - 1), xOf = r => m.l + (r - 1) * step;
+    const short = s => (s.length > 12 ? s.slice(0, 11) + '…' : s);
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" tabindex="0" aria-label="Each company's price in each round of Game 2. The table below lists every value.">`;
+    for (let p = MARKET.minPrice; p <= MARKET.maxPrice; p += 10) {
+      svg += `<line class="gl" x1="${m.l}" x2="${W - m.r}" y1="${yOf(p)}" y2="${yOf(p)}"/><text x="${m.l - 7}" y="${yOf(p) + 4}" text-anchor="end">$${p}</text>`;
+    }
+    for (let r = 1; r <= ROUNDS; r++) svg += `<text x="${xOf(r)}" y="${H - m.b + 17}" text-anchor="middle">${r}</text>`;
+    svg += `<text x="${(m.l + W - m.r) / 2}" y="${H - 3}" text-anchor="middle">Round</text>`;
+    svg += `<line class="xh" id="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/>`;
+    ord.forEach(s => {
+      const pts = res.map(o => `${xOf(o.round)},${yOf(o.firms[s].price)}`);
+      if (pts.length > 1) svg += `<path class="ln s${s}" d="M${pts.join('L')}"/>`;
+      svg += res.map(o => `<circle class="mk f${s}" cx="${xOf(o.round)}" cy="${yOf(o.firms[s].price)}" r="4"/>`).join('');
+    });
+    if (labels) ord.forEach((s, i) => { svg += `<text class="lab" x="${xOf(last.round) + 10}" y="${ends[i] + 4}">${esc(short(name(s)))}</text>`; });
+    svg += `<rect class="hit" x="${m.l - step / 2}" y="${m.t}" width="${W - m.l - m.r + step}" height="${H - m.t - m.b}"/></svg><div class="tip" id="tip" hidden></div>`;
+    box.innerHTML = svg;
+
+    const el = box.querySelector('svg'), tip = $('tip'), xh = $('xh');
+    const hide = () => { chartRound = null; tip.hidden = true; xh.setAttribute('visibility', 'hidden'); };
+    const show = r => {
+      const o = res.find(x => x.round === r);
+      if (!o) { hide(); return; }
+      chartRound = r;
+      const x = xOf(r);
+      xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
+      tip.innerHTML = `<b>Round ${r}</b>` + ord.map(s => `<span><span class="nmcell">${dot(s)}${esc(short(name(s)))}</span><span class="num">${money(o.firms[s].price)}</span></span>`).join('');
+      tip.hidden = false;
+      const px = x * el.getBoundingClientRect().width / W, tw = tip.offsetWidth;
+      tip.style.left = Math.max(0, px + 14 + tw > box.clientWidth ? px - 14 - tw : px + 14) + 'px';
+    };
+    const roundAt = ev => {
+      const rect = el.getBoundingClientRect(), ux = (ev.clientX - rect.left) * W / rect.width;
+      return Math.max(1, Math.min(last.round, Math.round((ux - m.l) / step) + 1));
+    };
+    el.addEventListener('pointermove', ev => show(roundAt(ev)));
+    el.addEventListener('pointerdown', ev => show(roundAt(ev)));
+    el.addEventListener('pointerleave', ev => { if (ev.pointerType === 'mouse') hide(); });
+    el.addEventListener('focus', () => show(chartRound || last.round));
+    el.addEventListener('blur', hide);
+    el.addEventListener('keydown', ev => {
+      if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+      ev.preventDefault();
+      show(Math.max(1, Math.min(last.round, (chartRound || last.round) + (ev.key === 'ArrowRight' ? 1 : -1))));
+    });
+  }
+  let resizeQueued = false;
+  window.addEventListener('resize', () => {
+    if (resizeQueued) return;
+    resizeQueued = true;
+    requestAnimationFrame(() => { resizeQueued = false; if (stageNow === 'final') drawChart(); });
+  });
+  $('againBtn').addEventListener('click', () => { session.leave(); });
+
+  /* ---------- Leaving ---------- */
+  let leaveArmed = null;
+  $('leaveBtn').addEventListener('click', () => {
+    const b = $('leaveBtn');
+    if (!leaveArmed) {
+      b.textContent = 'Click again to leave';
+      leaveArmed = setTimeout(() => { leaveArmed = null; b.textContent = 'Leave game'; }, 3000);
+      return;
+    }
+    clearTimeout(leaveArmed); leaveArmed = null; b.textContent = 'Leave game';
+    session.leave();
+  });
+
+  /* ---------- Render ---------- */
+  const SCREENS = ['sStart', 'sLobby', 'sChoose', 'sResult', 'sFinal'];
+  function screenFor(st) {
+    if (st === 'start') return 'sStart';
+    if (st === 'lobby') return 'sLobby';
+    if (st === 'final') return 'sFinal';
+    if (/^(result|between)/.test(st)) return 'sResult';
+    return 'sChoose';
+  }
+  function render() {
+    if (!session) { refreshStartButtons(); return; }
+    const st = session.stage(), changed = st !== stageNow, scr = screenFor(st);
+    const prev = stageNow;
+    stageNow = st;
+    if (changed) {
+      SCREENS.forEach(s => { $(s).hidden = s !== scr; });
+      if (prev !== null && prev !== 'start' && st === 'start') {
+        stopBots(); builtChoose = 0; builtResult = 0; chartData = [];
+        [selected, guess].forEach(o => Object.keys(o).forEach(k => delete o[k]));
+      }
+      if (screenFor(prev || 'start') !== scr) window.scrollTo(0, 0);
+    }
+    const info = session.info();
+    $('gameBar').hidden = !info;
+    if (info) $('barCode').textContent = info.code;
+
+    if (st === 'start') { refreshStartButtons(); return; }
+    if (st === 'lobby') { renderLobby(); return; }
+    if (scr === 'sChoose') {
+      const d = +st.replace(/\D/g, '');
+      if (builtChoose !== d) buildChoose(d);
+      if (selected[d] === undefined && st !== 'choose' + d) {
+        session.loadPick(d).then(p => { if (p) { selected[d] = p.price; render(); } }).catch(() => {});
+      }
+      renderChoose(d);
+      return;
+    }
+    if (scr === 'sResult') {
+      const d = +st.replace(/\D/g, '');
+      if (builtResult !== d) buildResult(d);
+      renderNext();
+      return;
+    }
+    if (st === 'final' && changed) renderFinal();
+  }
+
+  /* ---------- Boot ---------- */
+  async function boot() {
+    const slow = setTimeout(() => { if (!ready) $('startNote').textContent = 'The game is taking a while to connect. Check your internet connection.'; }, 10000);
+    const db = await use('db');
+    clearTimeout(slow);
+    if (!db) {
+      $('startNote').textContent = 'This game could not reach its server. Check your internet connection, then reload the page.';
+      return;
+    }
+    gameDb = db;
+    session = Core.Session({
+      db, uid: null, storage,
+      onChange: render,
+      onLost: () => {
+        render();
+        $('startMsg').textContent = 'You rejoined this game on another device, so this page has left it.';
+        $('startMsg').hidden = false;
+      }
+    });
+    ready = true;
+    $('startNote').hidden = true;
+    const saved = ss.get(KEY);
+    if (saved) { try { await session.resume(saved); } catch (e) { /* start fresh */ } }
+    if (session.info()) await resumeBots(); else ss.del(BOTS_KEY);
+    render();
+    const pollAll = () => { session.poll(); bots.forEach(b => b.s.poll()); };
+    setInterval(pollAll, 2000);
+    // A phone that slept catches up as soon as it wakes.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) pollAll(); });
+  }
+  boot();
+})();
+</script>
+</body></html>
